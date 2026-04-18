@@ -1,0 +1,69 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: thresher
+    main: .
+    binary: thresher
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/jaxxstorm/thresher/cmd.ReleaseVersion={{ .Version }}
+
+archives:
+  - id: default
+    ids:
+      - thresher
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+brews:
+  - name: thresher
+    repository:
+      owner: jaxxstorm
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: GitHub Actions
+      email: bot@leebriggs.co.uk
+    directory: Formula
+    description: Decode Tailscale debug captures and analyze packet streams.
+    homepage: https://github.com/jaxxstorm/thresher
+    license: MIT
+
+scoops:
+  - name: thresher
+    repository:
+      owner: jaxxstorm
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    commit_author:
+      name: GitHub Actions
+      email: bot@leebriggs.co.uk
+    description: Decode Tailscale debug captures and analyze packet streams.
+    homepage: https://github.com/jaxxstorm/thresher
+    license: MIT

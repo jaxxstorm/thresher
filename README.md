@@ -8,6 +8,19 @@ It can:
 - print packet output as JSONL, compact JSONL, summary rows, or packet-list rows
 - analyze live or saved packet streams with an Aperture-served LLM
 
+## Installation
+
+Homebrew:
+
+```bash
+brew install jaxxstorm/tap/thresher
+```
+
+GitHub Releases:
+
+- Download the archive for your platform from `https://github.com/jaxxstorm/thresher/releases`
+- Extract it and place `thresher` somewhere on your `PATH`
+
 ## Requirements
 
 - a local `tailscaled` for live capture
@@ -19,40 +32,40 @@ It can:
 Show help:
 
 ```bash
-go run . --help
+thresher --help
 ```
 
 Capture live traffic:
 
 ```bash
-go run . capture
+thresher capture
 ```
 
 Write capture output to a file:
 
 ```bash
-go run . capture -o capture.jsonl
+thresher capture -o capture.jsonl
 ```
 
 Choose a capture format:
 
 ```bash
-go run . capture --format jsonl
-go run . capture --format jsonl-compact
-go run . capture --format summary
-go run . capture --format packet-list
+thresher capture --format jsonl
+thresher capture --format jsonl-compact
+thresher capture --format summary
+thresher capture --format packet-list
 ```
 
 Analyze live traffic with an Aperture endpoint:
 
 ```bash
-go run . analyze --endpoint http://ai --model gpt-4o
+thresher analyze --endpoint http://ai --model gpt-4o
 ```
 
 Analyze a saved capture:
 
 ```bash
-go run . analyze --endpoint http://ai --model gpt-4o --input capture.jsonl
+thresher analyze --endpoint http://ai --model gpt-4o --input capture.jsonl
 ```
 
 ## Config File

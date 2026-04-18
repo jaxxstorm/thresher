@@ -10,6 +10,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 )
 
+var ReleaseVersion string
+
 func init() {
 	rootCmd.AddCommand(newVersionCommand())
 }
@@ -33,6 +35,10 @@ func newVersionCommand() *cobra.Command {
 }
 
 func calculateVersion() (*vers.LanguageVersions, error) {
+	if ReleaseVersion != "" {
+		return &vers.LanguageVersions{Go: ReleaseVersion}, nil
+	}
+
 	repoPath := viper.GetString("repo-path")
 	if repoPath == "" {
 		repoPath = "."
