@@ -1,9 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 
-	"github.com/charmbracelet/lipgloss"
 	log "github.com/jaxxstorm/log"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -13,8 +17,6 @@ var (
 	logger   *log.Logger
 	logLevel string
 
-	bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-
 	rootCmd = &cobra.Command{
 		Use:           "thresher",
 		Short:         "Decode Tailscale debug captures",
@@ -22,6 +24,9 @@ var (
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if logger != nil {
 				_ = logger.Close()
@@ -37,10 +42,6 @@ var (
 
 			return nil
 		},
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintln(cmd.OutOrStdout(), bannerStyle.Render("hello world"))
-			return err
-		},
 	}
 )
 
@@ -54,9 +55,23 @@ func init() {
 func initConfig() {
 	viper.SetEnvPrefix("thresher")
 	viper.AutomaticEnv()
-	// Config file discovery will be added in a later change.
+	viper.SetConfigType("yaml")
+	viper.SetConfigName("thresher")
+	viper.AddConfigPath(".")
+	if home, err := os.UserHomeDir(); err == nil {
+		viper.AddConfigPath(home)
+		viper.AddConfigPath(filepath.Join(home, ".config", "thresher"))
+	}
+	_ = viper.ReadInConfig()
 }
 
 func Execute() error {
-	return rootCmd.Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return ExecuteContext(ctx)
+}
+
+func ExecuteContext(ctx context.Context) error {
+	return rootCmd.ExecuteContext(ctx)
 }

@@ -1,7 +1,5 @@
-## Purpose
+## MODIFIED Requirements
 
-Define the baseline behavior for the Thresher root CLI command.
-## Requirements
 ### Requirement: Root command compiles and exits cleanly
 The binary SHALL compile from `go build` without errors and SHALL present registered subcommands cleanly when invoked with no arguments.
 
