@@ -1,0 +1,133 @@
+schema: spec-driven
+
+context: |
+  Project: thresher
+  Module: github.com/jaxxstorm/thresher
+  Language: Go
+  Go version: 1.26.2
+
+  ## Purpose
+  thresher is a standalone Go CLI tool that reads Tailscale debug capture pcap files
+  (produced by `tailscale debug capture`) and decodes the custom Tailscale packet
+  wrapper without requiring Wireshark or tshark. It mirrors the logic of a Lua
+  Wireshark dissector and emits structured JSONL output (one JSON object per packet).
+
+  It can optionally interface with the Tailscale LocalAPI via `tailscale debug capture`
+  to stream live packets instead of reading from a file.
+
+  ## Packet format (Tailscale debug capture wrapper)
+  Each packet in the pcap uses wtap USER0 (link-layer ID 147) and has this structure:
+
+    [2 bytes LE] path_id
+      0   = FromLocal
+      1   = FromPeer
+      2   = Synthesized (Inbound / ToLocal)
+      3   = Synthesized (Outbound / ToPeer)
+      254 = Disco frame
+
+    [1 byte]     SNAT address length (4 = IPv4, 16 = IPv6, 0 = absent)
+    [N bytes]    SNAT address
+
+    [1 byte]     DNAT address length (4 = IPv4, 16 = IPv6, 0 = absent)
+    [N bytes]    DNAT address
+
+    [remaining]  payload
+      if path_id == 254 → DISCO metadata frame (see below)
+      otherwise         → standard IP packet (IPv4 or IPv6), decode inner IP/TCP/UDP headers
+
+  ## DISCO metadata frame format
+    [1 byte]   flags (bit 0 = from_derp)
+    [32 bytes] DERP public key (always present in wire format, meaningful only if from_derp)
+    [2 bytes LE] source port
+    [2 bytes LE] address length
+    [N bytes]  source address (4 = IPv4, 16 = IPv6)
+    [2 bytes]  payload length (skip)
+    [remaining] DISCO frame
+
+  ## DISCO frame format
+    [1 byte LE] message_type
+      1 = Ping
+      2 = Pong
+      3 = Call me maybe
+      4 = Bind UDP Relay Endpoint
+      5 = Bind UDP Relay Endpoint Challenge
+      6 = Bind UDP Relay Endpoint Answer
+      7 = Call me maybe via
+
+    [1 byte]   protocol version
+    if type == Ping or Pong:
+      [12 bytes] transaction ID
+    if type == Ping:
+      [32 bytes] node key
+    if type == Pong:
+      [16 bytes] pong source (IPv6)
+      [2 bytes LE] pong source port
+
+  ## JSON output schema (JSONL, one object per packet)
+  Each emitted object should include at minimum:
+    - frame_number (int)
+    - timestamp (RFC3339 with nanoseconds)
+    - path (string, human-readable)
+    - path_id (int)
+    - snat (string, IP or empty)
+    - dnat (string, IP or empty)
+    - disco (bool)
+    - inner (object, present when disco == false):
+        - ip_version (int)
+        - protocol (string: "TCP", "UDP", "ICMP", etc.)
+        - src_ip, dst_ip (string)
+        - src_port, dst_port (int, when applicable)
+    - disco_meta (object, present when disco == true):
+        - from_derp (bool)
+        - derp_pub_key (hex string, when from_derp)
+        - src_ip (string)
+        - src_port (int)
+        - frame:
+            - type (string, human-readable)
+            - version (int)
+            - txid (hex, when applicable)
+            - node_key (hex, when applicable)
+            - pong_src (string, when applicable)
+            - pong_src_port (int, when applicable)
+
+  ## CLI design
+  - Binary name: thresher
+  - CLI framework: github.com/spf13/cobra + github.com/spf13/viper
+  - Logging: github.com/jaxxstorm/log (structured, levelled)
+  - Version command: github.com/jaxxstorm/vers
+  - Output styling: charmbracelet libraries (lipgloss for colour/style, not a TUI)
+  - Not a TUI; terminal output should be readable and attractive but primarily line-oriented
+
+  ## Commands (planned)
+  thresher read <file.pcap>
+    Reads a pcap file and emits JSONL to stdout.
+    Flags:
+      --output / -o  (string) output format: jsonl (default), pretty, table
+      --filter       (string) filter by path name or path_id
+
+  thresher capture
+    Shells out to `tailscale debug capture` (or speaks LocalAPI) and streams
+    decoded packets live. Same output flags as `read`.
+
+  thresher version
+    Prints version info (via jaxxstorm/vers).
+
+  ## Conventions
+  - Errors are wrapped with context and returned; fatal errors logged at error level then os.Exit(1)
+  - All multi-word flags use kebab-case
+  - Config file support via viper (thresher.yaml / .thresher.yaml, XDG paths)
+  - Use google/gopacket for pcap reading and IP/TCP/UDP decoding
+  - Do not depend on Wireshark, tshark, or any Lua runtime
+  - Tests live alongside source in _test.go files
+  - Prefer `go run .` for CLI smoke tests and manual verification instead of `go build`
+  - Follow standard Go project layout: cmd/, internal/, pkg/ as appropriate
+
+rules:
+  proposal:
+    - State the problem clearly before proposing a solution
+    - Include a "Non-goals" section
+    - Reference the packet format spec above when discussing wire format changes
+  tasks:
+    - Break implementation tasks into chunks no larger than a single package or file
+    - Always include a testing task alongside any implementation task
+    - Reference specific byte offsets or field names from the packet format above
