@@ -24,6 +24,7 @@ func executeCommandContext(ctx context.Context, args ...string) (string, error) 
 	analyzeArgs.endpoint = ""
 	analyzeArgs.model = ""
 	analyzeArgs.input = ""
+	analyzeArgs.mode = ""
 	analyzeArgs.endpointStyle = ""
 	analyzeArgs.batchPackets = 0
 	analyzeArgs.batchBytes = 0

@@ -15,6 +15,7 @@ import (
 type Model struct {
 	mu              sync.RWMutex
 	config          Config
+	state           *StateStore
 	cancel          context.CancelFunc
 	width           int
 	height          int
@@ -39,6 +40,8 @@ type Model struct {
 	modelOffset     int
 	quitting        bool
 }
+
+type snapshotMsg SessionSnapshot
 
 type paneFocus string
 
@@ -93,6 +96,13 @@ func NewModel(config Config) *Model {
 	}
 }
 
+func NewBoundModel(config Config, state *StateStore) *Model {
+	model := NewModel(config)
+	model.state = state
+	model.applySnapshot(state.Snapshot())
+	return model
+}
+
 func (m *Model) Init() tea.Cmd { return nil }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -103,6 +113,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+	case snapshotMsg:
+		m.applySnapshot(SessionSnapshot(msg))
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "tab":
@@ -156,12 +168,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = fmt.Sprintf("switched model to %s", m.model)
 				m.lastEvent = m.status
 				m.pushEvent(m.status)
+				if m.state != nil {
+					m.state.SetActiveModel(m.model)
+				}
 				if !m.paused && !m.inFlight && !m.limitReached {
 					m.phase = "collecting"
 				}
 			}
 		case "p":
 			m.paused = !m.paused
+			if m.state != nil {
+				m.state.SetPaused(m.paused)
+			}
 			if m.paused {
 				m.status = "analysis paused"
 				m.phase = "paused"
@@ -263,6 +281,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) applySnapshot(snapshot SessionSnapshot) {
+	m.status = snapshot.Status
+	m.lastEvent = snapshot.LastEvent
+	m.phase = snapshot.Phase
+	m.model = snapshot.Model
+	m.records = snapshot.Records
+	m.totalBytes = snapshot.TotalBytes
+	m.pendingPackets = snapshot.PendingPackets
+	m.pendingBytes = snapshot.PendingBytes
+	m.uploadedBatches = snapshot.UploadedBatches
+	m.inFlight = snapshot.InFlight
+	m.limitReached = snapshot.LimitReached
+	m.paused = snapshot.Paused
+	m.analysis = append([]string(nil), snapshot.Analysis...)
+	m.events = append([]string(nil), snapshot.Events...)
+	m.models = m.models[:0]
+	for _, model := range snapshot.Models {
+		m.models = append(m.models, ModelInfo{ID: model})
+	}
+	if len(m.models) == 0 {
+		m.selected = 0
+		m.modelOffset = 0
+		return
+	}
+
+	selected := 0
+	for i, model := range m.models {
+		if model.ID == m.model {
+			selected = i
+			break
+		}
+	}
+	m.selected = selected
+	m.ensureModelSelectionVisible(0)
+}
+
 func (m *Model) View() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -313,47 +367,41 @@ func (m *Model) QuitRequested() bool {
 }
 
 type UISnapshot struct {
-	Status          string
-	LastEvent       string
-	Phase           string
-	Model           string
-	Records         int
-	TotalBytes      int
-	PendingPackets  int
-	PendingBytes    int
-	UploadedBatches int
-	InFlight        bool
-	LimitReached    bool
-	Models          []string
-	Analysis        []string
-	SelectedModel   string
+	SessionSnapshot
+	SelectedModel string
 }
 
 func (m *Model) Snapshot() UISnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	models := make([]string, 0, len(m.models))
-	for _, model := range m.models {
-		models = append(models, model.ID)
-	}
-
 	return UISnapshot{
-		Status:          m.status,
-		LastEvent:       m.lastEvent,
-		Phase:           m.phase,
-		Model:           m.model,
-		Records:         m.records,
-		TotalBytes:      m.totalBytes,
-		PendingPackets:  m.pendingPackets,
-		PendingBytes:    m.pendingBytes,
-		UploadedBatches: m.uploadedBatches,
-		InFlight:        m.inFlight,
-		LimitReached:    m.limitReached,
-		Models:          models,
-		Analysis:        append([]string(nil), m.analysis...),
-		SelectedModel:   m.selectedModel(),
+		SessionSnapshot: SessionSnapshot{
+			Status:          m.status,
+			LastEvent:       m.lastEvent,
+			Phase:           m.phase,
+			Model:           m.model,
+			Records:         m.records,
+			TotalBytes:      m.totalBytes,
+			PendingPackets:  m.pendingPackets,
+			PendingBytes:    m.pendingBytes,
+			UploadedBatches: m.uploadedBatches,
+			InFlight:        m.inFlight,
+			LimitReached:    m.limitReached,
+			Paused:          m.paused,
+			Models:          modelIDs(m.models),
+			Analysis:        append([]string(nil), m.analysis...),
+			Events:          append([]string(nil), m.events...),
+		},
+		SelectedModel: m.selectedModel(),
 	}
+}
+
+func modelIDs(models []ModelInfo) []string {
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	return ids
 }
 
 func (m *Model) SetCancel(cancel context.CancelFunc) {

@@ -3,9 +3,11 @@ package analyze
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,7 +73,7 @@ func TestSessionRunReaderBatchesInput(t *testing.T) {
 		t.Fatalf("RunReader() error = %v", err)
 	}
 
-	snapshot := waitForSnapshot(t, session.ui, func(state UISnapshot) bool {
+	snapshot := waitForSnapshot(t, session.State(), func(state SessionSnapshot) bool {
 		return state.UploadedBatches == 1 && len(state.Analysis) == 1
 	})
 	if snapshot.Records != 1 {
@@ -108,7 +110,7 @@ func TestSessionRunReaderMarksLimitReached(t *testing.T) {
 		t.Fatalf("RunReader() error = %v", err)
 	}
 
-	snapshot := waitForSnapshot(t, session.ui, func(state UISnapshot) bool {
+	snapshot := waitForSnapshot(t, session.State(), func(state SessionSnapshot) bool {
 		return state.LimitReached
 	})
 	if snapshot.Records != 2 {
@@ -135,19 +137,100 @@ func TestBuildBatchPromptIncludesAnnotations(t *testing.T) {
 	}
 }
 
-func waitForSnapshot(t *testing.T, model *Model, ok func(UISnapshot) bool) UISnapshot {
+func TestBuildBatchPromptPreservesWrapperFields(t *testing.T) {
+	prompt := buildBatchPrompt([]capture.Record{{
+		Number:         1,
+		Time:           "2026-04-18T00:00:00Z",
+		Src:            "100.64.0.1",
+		Dst:            "100.64.0.2",
+		Protocol:       "TCP",
+		Info:           "1234 -> 443",
+		PathID:         7,
+		SNAT:           "100.64.0.10",
+		DNAT:           "100.64.0.20",
+		PayloadPreview: "GET /health",
+	}})
+	for _, needle := range []string{"path_id=7", "snat=100.64.0.10", "dnat=100.64.0.20", `payload="GET /health"`} {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("expected prompt to contain %q, got %q", needle, prompt)
+		}
+	}
+}
+
+func TestWebPresenterServesSnapshotAndEvents(t *testing.T) {
+	state := NewStateStore(Config{Model: "gpt-4o"})
+	presenter := NewWebPresenter()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- presenter.Run(ctx, state, func(context.Context) error {
+			state.Update(func(snapshot *SessionSnapshot) {
+				snapshot.Status = "analysis updated"
+				snapshot.Phase = "collecting"
+				snapshot.Analysis = []string{"browser output"}
+				pushSnapshotEvent(snapshot, "browser output")
+			})
+			time.Sleep(100 * time.Millisecond)
+			return nil
+		})
+	}()
+
+	url := <-presenter.Ready()
+	if !IsLocalhostURL(url) {
+		t.Fatalf("expected localhost url, got %q", url)
+	}
+
+	resp, err := http.Get(url + "/snapshot")
+	if err != nil {
+		t.Fatalf("snapshot request error = %v", err)
+	}
+	defer resp.Body.Close()
+	var snapshot SessionSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if snapshot.Model != "gpt-4o" {
+		t.Fatalf("expected model in snapshot, got %#v", snapshot)
+	}
+
+	eventsResp, err := http.Get(url + "/events")
+	if err != nil {
+		t.Fatalf("events request error = %v", err)
+	}
+	defer eventsResp.Body.Close()
+	body, err := io.ReadAll(eventsResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if !bytes.Contains(body, []byte("event: snapshot")) {
+		t.Fatalf("expected sse snapshot event, got %q", body)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	_, err = http.Get(url + "/snapshot")
+	if err == nil {
+		t.Fatal("expected server shutdown after session completion")
+	}
+}
+
+func waitForSnapshot(t *testing.T, state *StateStore, ok func(SessionSnapshot) bool) SessionSnapshot {
 	t.Helper()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		snapshot := model.Snapshot()
+		snapshot := state.Snapshot()
 		if ok(snapshot) {
 			return snapshot
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	snapshot := model.Snapshot()
+	snapshot := state.Snapshot()
 	t.Fatalf("condition not met, last snapshot: %#v", snapshot)
-	return UISnapshot{}
+	return SessionSnapshot{}
 }
