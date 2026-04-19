@@ -1,6 +1,6 @@
 # Analyze Command Guide
 
-`thresher analyze` sends decoded packet capture context to an Aperture-served LLM endpoint and renders ongoing analysis in a full-screen interactive session.
+`thresher analyze` sends decoded packet capture context to an Aperture-served LLM endpoint and renders ongoing analysis in either a full-screen console session or a localhost web session.
 
 ## Endpoint Model
 
@@ -69,9 +69,15 @@ Analyze a saved JSONL packet stream:
 go run . analyze --model gpt-4o --input capture.jsonl
 ```
 
+Start the localhost web session:
+
+```bash
+go run . analyze --model gpt-4o --mode web
+```
+
 ## Session UI
 
-The interactive analysis session now takes over the terminal window and keeps a live dashboard visible while analysis is running.
+Console mode takes over the terminal window and keeps a live dashboard visible while analysis is running.
 
 The full-screen UI shows:
 
@@ -82,11 +88,23 @@ The full-screen UI shows:
 - available models when Aperture exposes `/v1/models`
 - recent session events and keybindings in a sidebar
 
-Basic controls:
+Console controls:
 
 - `m`: cycle models when available
 - `p`: pause/resume analysis state in the UI
 - `q`: quit the session
+
+## Web Mode
+
+`--mode web` starts a localhost-only browser UI and prints the resolved URL.
+
+The web UI shows:
+
+- current endpoint, active model, and session phase
+- packet, byte, batch, and limit counters
+- live analysis updates as new responses arrive
+- recent session events
+- browser controls for model selection, pause or resume, and quit
 
 ## Manual Verification
 

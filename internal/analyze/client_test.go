@@ -195,6 +195,21 @@ func TestWebPresenterServesSnapshotAndEvents(t *testing.T) {
 		t.Fatalf("expected model in snapshot, got %#v", snapshot)
 	}
 
+	pageResp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("page request error = %v", err)
+	}
+	defer pageResp.Body.Close()
+	pageBody, err := io.ReadAll(pageResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(page) error = %v", err)
+	}
+	for _, needle := range []string{"Apply model", "Pause analysis", "Quit session"} {
+		if !bytes.Contains(pageBody, []byte(needle)) {
+			t.Fatalf("expected page to contain %q, got %q", needle, pageBody)
+		}
+	}
+
 	eventsResp, err := http.Get(url + "/events")
 	if err != nil {
 		t.Fatalf("events request error = %v", err)
@@ -215,6 +230,67 @@ func TestWebPresenterServesSnapshotAndEvents(t *testing.T) {
 	_, err = http.Get(url + "/snapshot")
 	if err == nil {
 		t.Fatal("expected server shutdown after session completion")
+	}
+}
+
+func TestWebPresenterControlsPauseModelAndQuit(t *testing.T) {
+	state := NewStateStore(Config{Endpoint: "http://ai", Model: "gpt-4o", BatchPackets: 20, BatchBytes: 65536, SessionPackets: 500, SessionBytes: 2097152})
+	state.Update(func(snapshot *SessionSnapshot) {
+		snapshot.Models = []string{"gpt-4o", "claude-sonnet-4-5"}
+	})
+
+	presenter := NewWebPresenter()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- presenter.Run(ctx, state, func(runCtx context.Context) error {
+			<-runCtx.Done()
+			return nil
+		})
+	}()
+
+	url := <-presenter.Ready()
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.Post(url+"/control/model", "application/json", strings.NewReader(`{"model":"claude-sonnet-4-5"}`))
+	if err != nil {
+		t.Fatalf("model control request error = %v", err)
+	}
+	resp.Body.Close()
+	snapshot := waitForSnapshot(t, state, func(state SessionSnapshot) bool {
+		return state.Model == "claude-sonnet-4-5"
+	})
+	if snapshot.Model != "claude-sonnet-4-5" {
+		t.Fatalf("expected model switch to persist, got %#v", snapshot)
+	}
+
+	resp, err = client.Post(url+"/control/pause", "application/json", strings.NewReader(`{"paused":true}`))
+	if err != nil {
+		t.Fatalf("pause control request error = %v", err)
+	}
+	resp.Body.Close()
+	snapshot = waitForSnapshot(t, state, func(state SessionSnapshot) bool {
+		return state.Paused
+	})
+	if !snapshot.Paused || snapshot.Phase != "paused" {
+		t.Fatalf("expected paused state, got %#v", snapshot)
+	}
+
+	resp, err = client.Post(url+"/control/quit", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("quit control request error = %v", err)
+	}
+	resp.Body.Close()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	_, err = client.Get(url + "/snapshot")
+	if err == nil {
+		t.Fatal("expected server shutdown after quit")
 	}
 }
 

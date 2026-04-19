@@ -7,6 +7,7 @@ import (
 )
 
 type SessionSnapshot struct {
+	Endpoint        string   `json:"endpoint"`
 	Status          string   `json:"status"`
 	LastEvent       string   `json:"last_event"`
 	Phase           string   `json:"phase"`
@@ -21,6 +22,10 @@ type SessionSnapshot struct {
 	Paused          bool     `json:"paused"`
 	Completed       bool     `json:"completed"`
 	Error           string   `json:"error,omitempty"`
+	BatchPackets    int      `json:"batch_packets"`
+	BatchBytes      int      `json:"batch_bytes"`
+	SessionPackets  int      `json:"session_packets"`
+	SessionBytes    int      `json:"session_bytes"`
 	Models          []string `json:"models,omitempty"`
 	Analysis        []string `json:"analysis,omitempty"`
 	Events          []string `json:"events,omitempty"`
@@ -35,10 +40,15 @@ type StateStore struct {
 func NewStateStore(config Config) *StateStore {
 	return &StateStore{
 		snapshot: SessionSnapshot{
-			Status:    "waiting for packets",
-			LastEvent: "session created",
-			Phase:     "idle",
-			Model:     config.Model,
+			Endpoint:       config.Endpoint,
+			Status:         "waiting for packets",
+			LastEvent:      "session created",
+			Phase:          "idle",
+			Model:          config.Model,
+			BatchPackets:   config.BatchPackets,
+			BatchBytes:     config.BatchBytes,
+			SessionPackets: config.SessionPackets,
+			SessionBytes:   config.SessionBytes,
 		},
 		subscribers: make(map[chan SessionSnapshot]struct{}),
 	}
