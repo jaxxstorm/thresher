@@ -18,6 +18,7 @@ func executeCommand(args ...string) (string, error) {
 func executeCommandContext(ctx context.Context, args ...string) (string, error) {
 	buf := &bytes.Buffer{}
 	viper.Reset()
+	setAnalyzeDefaults()
 	captureArgs.output = ""
 	captureArgs.format = "jsonl"
 	analyzeArgs.endpoint = ""

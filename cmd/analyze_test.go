@@ -25,15 +25,45 @@ func TestAnalyzeAppearsInRootHelp(t *testing.T) {
 	}
 }
 
-func TestAnalyzeRequiresEndpoint(t *testing.T) {
-	viper.Set("analyze.endpoint", "")
-	viper.Set("analyze.model", "gpt-4o")
-	_, err := executeCommand("analyze")
-	if err == nil {
-		t.Fatal("expected missing endpoint error")
+func TestAnalyzeUsesBuiltInEndpointDefault(t *testing.T) {
+	original := openAnalyzeCaptureStream
+	openAnalyzeCaptureStream = func(context.Context) (io.ReadCloser, error) {
+		return nil, errors.New("stop")
 	}
-	if !strings.Contains(err.Error(), "analysis endpoint required") {
-		t.Fatalf("unexpected error %v", err)
+	defer func() { openAnalyzeCaptureStream = original }()
+
+	resetAnalyzeStateForTest()
+	viper.Set("analyze.model", "gpt-4o")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runAnalyze(context.Background(), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected stream stop error")
+	}
+	if !strings.Contains(stderr.String(), "endpoint=http://ai model=gpt-4o") {
+		t.Fatalf("expected built-in endpoint default, got %q", stderr.String())
+	}
+}
+
+func TestAnalyzeConfigEndpointOverridesBuiltInDefault(t *testing.T) {
+	original := openAnalyzeCaptureStream
+	openAnalyzeCaptureStream = func(context.Context) (io.ReadCloser, error) {
+		return nil, errors.New("stop")
+	}
+	defer func() { openAnalyzeCaptureStream = original }()
+
+	resetAnalyzeStateForTest()
+	viper.Set("analyze.endpoint", "http://configured")
+	viper.Set("analyze.model", "configured-model")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runAnalyze(context.Background(), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected stream stop error")
+	}
+	if !strings.Contains(stderr.String(), "endpoint=http://configured model=configured-model") {
+		t.Fatalf("expected configured values in output, got %q", stderr.String())
 	}
 }
 
@@ -44,15 +74,20 @@ func TestAnalyzeFlagOverridesConfig(t *testing.T) {
 	}
 	defer func() { openAnalyzeCaptureStream = original }()
 
+	resetAnalyzeStateForTest()
 	viper.Set("analyze.endpoint", "http://configured")
 	viper.Set("analyze.model", "configured-model")
+	analyzeArgs.endpoint = "http://flagged"
+	analyzeArgs.model = "flagged-model"
 
-	output, err := executeCommand("analyze", "--endpoint", "http://flagged", "--model", "flagged-model")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := runAnalyze(context.Background(), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected stream stop error")
 	}
-	if !strings.Contains(output, "endpoint=http://flagged model=flagged-model") {
-		t.Fatalf("expected flagged values in output, got %q", output)
+	if !strings.Contains(stderr.String(), "endpoint=http://flagged model=flagged-model") {
+		t.Fatalf("expected flagged values in output, got %q", stderr.String())
 	}
 }
 
@@ -98,4 +133,24 @@ func TestAnalyzeSupportsSavedInput(t *testing.T) {
 	if !strings.Contains(output, "analyze started") {
 		t.Fatalf("expected analyze startup output, got %q", output)
 	}
+}
+
+func TestInteractiveAnalyzeSessionRequiresRealTTYs(t *testing.T) {
+	if isInteractiveAnalyzeSession() {
+		t.Fatal("expected test process stdio to be non-interactive")
+	}
+}
+
+func resetAnalyzeStateForTest() {
+	viper.Reset()
+	setAnalyzeDefaults()
+	analyzeArgs.endpoint = ""
+	analyzeArgs.model = ""
+	analyzeArgs.input = ""
+	analyzeArgs.endpointStyle = ""
+	analyzeArgs.batchPackets = 0
+	analyzeArgs.batchBytes = 0
+	analyzeArgs.sessionPackets = 0
+	analyzeArgs.sessionBytes = 0
+	analyzeArgs.maxTokens = 0
 }

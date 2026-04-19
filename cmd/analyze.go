@@ -10,6 +10,7 @@ import (
 	"github.com/jaxxstorm/thresher/internal/capture"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"golang.org/x/term"
 )
 
 var analyzeArgs struct {
@@ -28,7 +29,11 @@ var openAnalyzeCaptureStream = capture.OpenLocalAPIStream
 
 func init() {
 	rootCmd.AddCommand(newAnalyzeCommand())
+	setAnalyzeDefaults()
+}
 
+func setAnalyzeDefaults() {
+	viper.SetDefault("analyze.endpoint", "http://ai")
 	viper.SetDefault("analyze.endpoint_style", string(analyze.EndpointAuto))
 	viper.SetDefault("analyze.batch_packets", 20)
 	viper.SetDefault("analyze.batch_bytes", 64*1024)
@@ -73,16 +78,15 @@ func runAnalyze(ctx context.Context, stdout, stderr io.Writer) error {
 		MaxTokens:      firstNonZero(analyzeArgs.maxTokens, viper.GetInt("analyze.max_tokens")),
 	}
 
-	if config.Endpoint == "" {
-		return fmt.Errorf("analysis endpoint required: pass --endpoint http://ai or configure analyze.endpoint")
-	}
 	if config.Model == "" {
 		return fmt.Errorf("analysis model required: pass --model or configure analyze.model")
 	}
 
 	session := analyze.NewSession(config)
-	if _, err := fmt.Fprintf(stderr, "analyze started; endpoint=%s model=%s\n", config.Endpoint, config.Model); err != nil {
-		return fmt.Errorf("writing analyze status: %w", err)
+	if !isInteractiveAnalyzeSession() {
+		if _, err := fmt.Fprintf(stderr, "analyze started; endpoint=%s model=%s\n", config.Endpoint, config.Model); err != nil {
+			return fmt.Errorf("writing analyze status: %w", err)
+		}
 	}
 	_ = stdout
 	if analyzeArgs.input != "" {
@@ -112,4 +116,10 @@ func firstNonZero(values ...int) int {
 		}
 	}
 	return 0
+}
+
+func isInteractiveAnalyzeSession() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) &&
+		term.IsTerminal(int(os.Stdout.Fd())) &&
+		term.IsTerminal(int(os.Stderr.Fd()))
 }

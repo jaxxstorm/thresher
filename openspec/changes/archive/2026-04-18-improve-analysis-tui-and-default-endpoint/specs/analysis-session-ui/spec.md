@@ -1,8 +1,5 @@
-# analysis-session-ui Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by syncing change add-aperture-analyze-command. Update Purpose after archive.
-## Requirements
 ### Requirement: Analysis sessions provide a live interactive UI
 The system SHALL present a Bubble Tea-based full-window interactive UI for analysis sessions that uses the available terminal area, refreshes incrementally as session state changes, and separates high-value session status from long-form analysis output.
 
@@ -19,6 +16,7 @@ The system SHALL present a Bubble Tea-based full-window interactive UI for analy
 #### Scenario: Session shows batch and upload progress
 - **WHEN** packets are being collected and uploaded for analysis
 - **THEN** the UI shows enough state to understand how many packets or batches have been processed and whether a request is in flight
+- **AND** upload or batching state is visually distinct from idle or completed state
 
 #### Scenario: Session adapts to terminal resize
 - **WHEN** the terminal window is resized during an analysis session
@@ -44,6 +42,7 @@ The UI SHALL communicate when uploads are paused, rate-limited, capped by config
 #### Scenario: Data limit reached is visible
 - **WHEN** the configured upload limit is reached during a session
 - **THEN** the UI clearly indicates that further analysis has been paused or stopped because the limit was hit
+- **AND** the limit-reached state is visually distinguishable from normal progress updates
 
 #### Scenario: Pause and wait states are visible
 - **WHEN** the session is paused or waiting on an endpoint response

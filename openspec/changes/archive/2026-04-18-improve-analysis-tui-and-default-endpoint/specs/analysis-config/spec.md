@@ -1,8 +1,5 @@
-# analysis-config Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by syncing change add-aperture-analyze-command. Update Purpose after archive.
-## Requirements
 ### Requirement: Analysis defaults can be configured
 The system SHALL support config-backed defaults for analysis settings such as endpoint, model, batching, and upload or cost limiting values. When neither config nor flags provide an endpoint, the system SHALL default the analyze endpoint to `http://ai`.
 

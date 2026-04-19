@@ -1,8 +1,5 @@
-# aperture-analysis Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by syncing change add-aperture-analyze-command. Update Purpose after archive.
-## Requirements
 ### Requirement: Analyze command sends capture analysis to Aperture
 The system SHALL expose an `analyze` command, with `analyse` as an alias, that submits decoded capture context to an Aperture-served LLM endpoint and returns ongoing analysis about what is happening in the packet stream. The command SHALL default its endpoint base URL to `http://ai` when the user does not provide one via flags or config.
 
