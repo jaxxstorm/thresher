@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/jaxxstorm/thresher/internal/analyze"
 	"github.com/jaxxstorm/thresher/internal/capture"
@@ -18,6 +19,7 @@ var analyzeArgs struct {
 	model          string
 	input          string
 	mode           string
+	webAccess      string
 	endpointStyle  string
 	batchPackets   int
 	batchBytes     int
@@ -28,6 +30,15 @@ var analyzeArgs struct {
 
 var openAnalyzeCaptureStream = capture.OpenLocalAPIStream
 
+type analyzeWebPresenter interface {
+	analyze.Presenter
+	Ready() <-chan string
+}
+
+var newAnalyzeWebPresenter = func(config analyze.Config) analyzeWebPresenter {
+	return analyze.NewWebPresenter(config)
+}
+
 func init() {
 	rootCmd.AddCommand(newAnalyzeCommand())
 	setAnalyzeDefaults()
@@ -36,6 +47,7 @@ func init() {
 func setAnalyzeDefaults() {
 	viper.SetDefault("analyze.endpoint", "http://ai")
 	viper.SetDefault("analyze.mode", "console")
+	viper.SetDefault("analyze.web_access", string(analyze.WebAccessLocal))
 	viper.SetDefault("analyze.endpoint_style", string(analyze.EndpointAuto))
 	viper.SetDefault("analyze.batch_packets", 20)
 	viper.SetDefault("analyze.batch_bytes", 64*1024)
@@ -60,6 +72,7 @@ func newAnalyzeCommand() *cobra.Command {
 	cmd.Flags().StringVar(&analyzeArgs.model, "model", "", "model identifier to use for analysis")
 	cmd.Flags().StringVarP(&analyzeArgs.input, "input", "i", "", "path to a saved JSONL packet stream to analyze instead of live capture")
 	cmd.Flags().StringVar(&analyzeArgs.mode, "mode", "", "analysis presentation mode: console or web")
+	cmd.Flags().StringVar(&analyzeArgs.webAccess, "web-access", "", "web exposure mode when --mode web: local or tailnet")
 	cmd.Flags().StringVar(&analyzeArgs.endpointStyle, "endpoint-style", "", "Aperture endpoint shape: auto, messages, chat-completions, responses")
 	cmd.Flags().IntVar(&analyzeArgs.batchPackets, "batch-packets", 0, "maximum packets per analysis batch")
 	cmd.Flags().IntVar(&analyzeArgs.batchBytes, "batch-bytes", 0, "maximum encoded bytes per analysis batch")
@@ -73,6 +86,8 @@ func runAnalyze(ctx context.Context, stdout, stderr io.Writer) error {
 	config := analyze.Config{
 		Endpoint:       firstNonEmpty(analyzeArgs.endpoint, viper.GetString("analyze.endpoint")),
 		Model:          firstNonEmpty(analyzeArgs.model, viper.GetString("analyze.model")),
+		UserAgent:      resolveAnalyzeUserAgent(),
+		WebAccess:      analyze.WebAccess(firstNonEmpty(analyzeArgs.webAccess, viper.GetString("analyze.web_access"))),
 		EndpointStyle:  analyze.EndpointStyle(firstNonEmpty(analyzeArgs.endpointStyle, viper.GetString("analyze.endpoint_style"))),
 		BatchPackets:   firstNonZero(analyzeArgs.batchPackets, viper.GetInt("analyze.batch_packets")),
 		BatchBytes:     firstNonZero(analyzeArgs.batchBytes, viper.GetInt("analyze.batch_bytes")),
@@ -92,15 +107,21 @@ func runAnalyze(ctx context.Context, stdout, stderr io.Writer) error {
 	if mode != "console" && mode != "web" {
 		return fmt.Errorf("invalid analysis mode %q: expected console or web", mode)
 	}
+	if config.WebAccess == "" {
+		config.WebAccess = analyze.WebAccessLocal
+	}
+	if config.WebAccess != analyze.WebAccessLocal && config.WebAccess != analyze.WebAccessTailnet {
+		return fmt.Errorf("invalid analysis web access %q: expected local or tailnet", config.WebAccess)
+	}
 
 	session := analyze.NewSession(config)
 	presenter := analyze.Presenter(analyze.NewConsolePresenter(config))
 	if mode == "web" {
-		webPresenter := analyze.NewWebPresenter()
+		webPresenter := newAnalyzeWebPresenter(config)
 		presenter = webPresenter
 		go func() {
 			url := <-webPresenter.Ready()
-			_, _ = fmt.Fprintf(stderr, "analyze started; endpoint=%s model=%s mode=%s url=%s\n", config.Endpoint, config.Model, mode, url)
+			_, _ = fmt.Fprintf(stderr, "analyze started; endpoint=%s model=%s mode=%s web-access=%s url=%s\n", config.Endpoint, config.Model, mode, config.WebAccess, url)
 		}()
 	} else if !isInteractiveAnalyzeSession() {
 		if _, err := fmt.Fprintf(stderr, "analyze started; endpoint=%s model=%s mode=%s\n", config.Endpoint, config.Model, mode); err != nil {
@@ -141,4 +162,20 @@ func isInteractiveAnalyzeSession() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) &&
 		term.IsTerminal(int(os.Stdout.Fd())) &&
 		term.IsTerminal(int(os.Stderr.Fd()))
+}
+
+func resolveAnalyzeUserAgent() string {
+	versions, err := calculateVersion()
+	if err != nil || versions == nil {
+		return formatAnalyzeUserAgent("")
+	}
+	return formatAnalyzeUserAgent(versions.Go)
+}
+
+func formatAnalyzeUserAgent(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		version = "dev"
+	}
+	return "thresher/" + version
 }

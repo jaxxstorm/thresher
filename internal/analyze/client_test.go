@@ -20,11 +20,14 @@ func TestClientAnalyzeChatCompletions(t *testing.T) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
+		if got := r.Header.Get("User-Agent"); got != "thresher/v1.2.3" {
+			t.Fatalf("expected versioned user agent, got %q", got)
+		}
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"analysis text"}}]}`))
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, EndpointChatCompletions)
+	client := NewClient(server.URL, EndpointChatCompletions, "thresher/v1.2.3")
 	resp, err := client.Analyze(context.Background(), AnalyzeRequest{Model: "gpt-4o", Prompt: "analyze"})
 	if err != nil {
 		t.Fatalf("Analyze() error = %v", err)
@@ -39,11 +42,14 @@ func TestClientListModels(t *testing.T) {
 		if r.URL.Path != "/v1/models" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
+		if got := r.Header.Get("User-Agent"); got != "thresher/v1.2.3" {
+			t.Fatalf("expected versioned user agent, got %q", got)
+		}
 		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o"},{"id":"claude-haiku"}]}`))
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, EndpointAuto)
+	client := NewClient(server.URL, EndpointAuto, "thresher/v1.2.3")
 	models, err := client.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels() error = %v", err)
@@ -157,9 +163,16 @@ func TestBuildBatchPromptPreservesWrapperFields(t *testing.T) {
 	}
 }
 
+func TestNewClientDefaultsUserAgent(t *testing.T) {
+	client := NewClient("http://ai", EndpointAuto, "")
+	if client.userAgent != "thresher/dev" {
+		t.Fatalf("expected default user agent, got %q", client.userAgent)
+	}
+}
+
 func TestWebPresenterServesSnapshotAndEvents(t *testing.T) {
 	state := NewStateStore(Config{Model: "gpt-4o"})
-	presenter := NewWebPresenter()
+	presenter := NewWebPresenter(Config{WebAccess: WebAccessLocal})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -239,7 +252,7 @@ func TestWebPresenterControlsPauseModelAndQuit(t *testing.T) {
 		snapshot.Models = []string{"gpt-4o", "claude-sonnet-4-5"}
 	})
 
-	presenter := NewWebPresenter()
+	presenter := NewWebPresenter(Config{WebAccess: WebAccessLocal})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

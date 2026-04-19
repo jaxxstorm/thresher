@@ -24,6 +24,7 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	style      EndpointStyle
+	userAgent  string
 }
 
 var defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
@@ -44,11 +45,12 @@ type ModelInfo struct {
 	ID string `json:"id"`
 }
 
-func NewClient(baseURL string, style EndpointStyle) *Client {
+func NewClient(baseURL string, style EndpointStyle, userAgent string) *Client {
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		style:      style,
 		httpClient: defaultHTTPClient,
+		userAgent:  normalizeUserAgent(userAgent),
 	}
 }
 
@@ -109,6 +111,7 @@ func (c *Client) Analyze(ctx context.Context, req AnalyzeRequest) (AnalyzeRespon
 		return AnalyzeResponse{}, fmt.Errorf("building analysis request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("User-Agent", c.userAgent)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -132,6 +135,7 @@ func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building model list request: %w", err)
 	}
+	httpReq.Header.Set("User-Agent", c.userAgent)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -157,6 +161,14 @@ func buildPrompt(system, prompt string) string {
 		return prompt
 	}
 	return system + "\n\n" + prompt
+}
+
+func normalizeUserAgent(userAgent string) string {
+	userAgent = strings.TrimSpace(userAgent)
+	if userAgent == "" {
+		return "thresher/dev"
+	}
+	return userAgent
 }
 
 func decodeChatResponse(body []byte) (AnalyzeResponse, error) {

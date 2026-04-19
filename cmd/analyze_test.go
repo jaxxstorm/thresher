@@ -13,8 +13,23 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jaxxstorm/thresher/internal/analyze"
 	"github.com/spf13/viper"
 )
+
+type stubAnalyzeWebPresenter struct {
+	url string
+}
+
+func (p *stubAnalyzeWebPresenter) Ready() <-chan string {
+	ch := make(chan string, 1)
+	ch <- p.url
+	return ch
+}
+
+func (p *stubAnalyzeWebPresenter) Run(ctx context.Context, state *analyze.StateStore, worker func(context.Context) error) error {
+	return worker(ctx)
+}
 
 func TestAnalyzeAppearsInRootHelp(t *testing.T) {
 	output, err := executeCommand("--help")
@@ -114,6 +129,16 @@ func TestAnalyzeDefaultsToConsoleMode(t *testing.T) {
 }
 
 func TestAnalyzeSupportsExplicitWebMode(t *testing.T) {
+	resetAnalyzeStateForTest()
+	originalPresenterFactory := newAnalyzeWebPresenter
+	t.Cleanup(func() { newAnalyzeWebPresenter = originalPresenterFactory })
+	newAnalyzeWebPresenter = func(config analyze.Config) analyzeWebPresenter {
+		if config.WebAccess != analyze.WebAccessLocal {
+			t.Fatalf("expected default web access to be local, got %q", config.WebAccess)
+		}
+		return &stubAnalyzeWebPresenter{url: "http://127.0.0.1:41001"}
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
@@ -137,12 +162,61 @@ func TestAnalyzeSupportsExplicitWebMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeCommand(analyze --mode web --input) error = %v", err)
 	}
-	if !strings.Contains(output, "mode=web url=http://127.0.0.1:") {
+	if !strings.Contains(output, "mode=web web-access=local url=http://127.0.0.1:41001") {
 		t.Fatalf("expected web startup output, got %q", output)
 	}
 }
 
+func TestAnalyzeWebModeSupportsExplicitTailnetAccess(t *testing.T) {
+	resetAnalyzeStateForTest()
+	originalPresenterFactory := newAnalyzeWebPresenter
+	t.Cleanup(func() { newAnalyzeWebPresenter = originalPresenterFactory })
+	newAnalyzeWebPresenter = func(config analyze.Config) analyzeWebPresenter {
+		if config.WebAccess != analyze.WebAccessTailnet {
+			t.Fatalf("expected explicit tailnet web access, got %q", config.WebAccess)
+		}
+		return &stubAnalyzeWebPresenter{url: "http://thresher.tail.ts.net:41234"}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"configured-model"}]}`))
+		case "/v1/chat/completions":
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"saved-input analysis"}}]}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "capture.jsonl")
+	content := "{\"number\":1,\"time\":\"2026-04-18T00:00:00Z\",\"src\":\"100.64.0.1\",\"dst\":\"100.64.0.2\",\"protocol\":\"TCP\",\"length\":64,\"info\":\"1234 -> 443\"}\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	output, err := executeCommand("analyze", "--endpoint", server.URL, "--model", "configured-model", "--mode", "web", "--web-access", "tailnet", "--input", path)
+	if err != nil {
+		t.Fatalf("executeCommand(analyze --mode web --web-access tailnet --input) error = %v", err)
+	}
+	if !strings.Contains(output, "mode=web web-access=tailnet url=http://thresher.tail.ts.net:41234") {
+		t.Fatalf("expected tailnet startup output, got %q", output)
+	}
+}
+
 func TestAnalyzeWebModePreservesWrapperFieldsAndSessionLimits(t *testing.T) {
+	resetAnalyzeStateForTest()
+	originalPresenterFactory := newAnalyzeWebPresenter
+	t.Cleanup(func() { newAnalyzeWebPresenter = originalPresenterFactory })
+	newAnalyzeWebPresenter = func(config analyze.Config) analyzeWebPresenter {
+		if config.WebAccess != analyze.WebAccessLocal {
+			t.Fatalf("expected wrapper-field web test to stay local, got %q", config.WebAccess)
+		}
+		return &stubAnalyzeWebPresenter{url: "http://127.0.0.1:41002"}
+	}
+
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -195,7 +269,7 @@ func TestAnalyzeWebModePreservesWrapperFieldsAndSessionLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeCommand(analyze web wrapper fields) error = %v", err)
 	}
-	if !strings.Contains(output, "mode=web url=http://127.0.0.1:") {
+	if !strings.Contains(output, "mode=web web-access=local url=http://127.0.0.1:41002") {
 		t.Fatalf("expected web startup output, got %q", output)
 	}
 	if requests != 1 {
@@ -217,6 +291,21 @@ func TestAnalyzeRejectsInvalidMode(t *testing.T) {
 	}
 }
 
+func TestAnalyzeRejectsInvalidWebAccess(t *testing.T) {
+	resetAnalyzeStateForTest()
+	viper.Set("analyze.model", "gpt-4o")
+	analyzeArgs.mode = "web"
+	analyzeArgs.webAccess = "public"
+
+	err := runAnalyze(context.Background(), io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected invalid web access error")
+	}
+	if !strings.Contains(err.Error(), "invalid analysis web access") {
+		t.Fatalf("unexpected error %v", err)
+	}
+}
+
 func TestAnalyseAliasRegistered(t *testing.T) {
 	buf := &bytes.Buffer{}
 	rootCmd.SetOut(buf)
@@ -233,6 +322,7 @@ func TestAnalyseAliasRegistered(t *testing.T) {
 }
 
 func TestAnalyzeSupportsSavedInput(t *testing.T) {
+	resetAnalyzeStateForTest()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
@@ -274,6 +364,7 @@ func resetAnalyzeStateForTest() {
 	analyzeArgs.model = ""
 	analyzeArgs.input = ""
 	analyzeArgs.mode = ""
+	analyzeArgs.webAccess = ""
 	analyzeArgs.endpointStyle = ""
 	analyzeArgs.batchPackets = 0
 	analyzeArgs.batchBytes = 0

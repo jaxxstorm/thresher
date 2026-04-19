@@ -16,6 +16,8 @@ import (
 type Config struct {
 	Endpoint       string
 	Model          string
+	UserAgent      string
+	WebAccess      WebAccess
 	EndpointStyle  EndpointStyle
 	BatchPackets   int
 	BatchBytes     int
@@ -51,7 +53,7 @@ func NewSession(config Config) *Session {
 		config.MaxTokens = 300
 	}
 
-	client := NewClient(config.Endpoint, config.EndpointStyle)
+	client := NewClient(config.Endpoint, config.EndpointStyle, config.UserAgent)
 	return &Session{client: client, config: config, state: NewStateStore(config)}
 }
 

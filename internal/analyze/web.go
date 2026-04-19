@@ -13,7 +13,7 @@ import (
 )
 
 type WebPresenter struct {
-	addr      string
+	runtime   webRuntime
 	baseURL   string
 	httpSrv   *http.Server
 	readyOnce sync.Once
@@ -28,8 +28,12 @@ type webPauseRequest struct {
 	Paused *bool `json:"paused,omitempty"`
 }
 
-func NewWebPresenter() *WebPresenter {
-	return &WebPresenter{addr: "127.0.0.1:0", readyCh: make(chan string, 1)}
+func NewWebPresenter(config Config) *WebPresenter {
+	return newWebPresenterWithRuntime(newWebRuntime(config))
+}
+
+func newWebPresenterWithRuntime(runtime webRuntime) *WebPresenter {
+	return &WebPresenter{runtime: runtime, readyCh: make(chan string, 1)}
 }
 
 func (p *WebPresenter) Ready() <-chan string {
@@ -40,15 +44,59 @@ func (p *WebPresenter) Run(ctx context.Context, state *StateStore, worker func(c
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	listener, err := net.Listen("tcp", p.addr)
+	endpoint, err := p.runtime.Open(runCtx)
 	if err != nil {
-		return fmt.Errorf("starting analysis web listener: %w", err)
+		return err
 	}
-	defer listener.Close()
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = endpoint.shutdown(shutdownCtx)
+	}()
 
-	p.baseURL = "http://" + listener.Addr().String()
+	p.baseURL = endpoint.baseURL
 	p.publishReady(p.baseURL)
 
+	handler := p.routes(runCtx, cancel, state)
+	if endpoint.wrap != nil {
+		handler = endpoint.wrap(handler)
+	}
+
+	p.httpSrv = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	serveErrCh := make(chan error, 1)
+	go func() {
+		serveErr := p.httpSrv.Serve(endpoint.listener)
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			serveErrCh <- serveErr
+			return
+		}
+		serveErrCh <- nil
+	}()
+
+	workerErrCh := make(chan error, 1)
+	go func() {
+		err := worker(runCtx)
+		if err == nil && runCtx.Err() == nil {
+			state.Update(markSessionComplete)
+		}
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = p.httpSrv.Shutdown(shutdownCtx)
+		workerErrCh <- err
+	}()
+
+	serveErr := <-serveErrCh
+	workerErr := <-workerErrCh
+	if serveErr != nil {
+		return serveErr
+	}
+	if errors.Is(workerErr, context.Canceled) || errors.Is(runCtx.Err(), context.Canceled) {
+		return nil
+	}
+	return workerErr
+}
+
+func (p *WebPresenter) routes(runCtx context.Context, cancel context.CancelFunc, state *StateStore) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -169,39 +217,7 @@ func (p *WebPresenter) Run(ctx context.Context, state *StateStore, worker func(c
 		}
 		go cancel()
 	})
-
-	p.httpSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	serveErrCh := make(chan error, 1)
-	go func() {
-		serveErr := p.httpSrv.Serve(listener)
-		if serveErr != nil && serveErr != http.ErrServerClosed {
-			serveErrCh <- serveErr
-			return
-		}
-		serveErrCh <- nil
-	}()
-
-	workerErrCh := make(chan error, 1)
-	go func() {
-		err := worker(runCtx)
-		if err == nil && runCtx.Err() == nil {
-			state.Update(markSessionComplete)
-		}
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		_ = p.httpSrv.Shutdown(shutdownCtx)
-		workerErrCh <- err
-	}()
-
-	serveErr := <-serveErrCh
-	workerErr := <-workerErrCh
-	if serveErr != nil {
-		return serveErr
-	}
-	if errors.Is(workerErr, context.Canceled) || errors.Is(runCtx.Err(), context.Canceled) {
-		return nil
-	}
-	return workerErr
+	return mux
 }
 
 func (p *WebPresenter) publishReady(url string) {
