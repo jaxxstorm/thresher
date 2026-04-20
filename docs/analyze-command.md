@@ -2,6 +2,12 @@
 
 `thresher analyze` sends decoded packet capture context to an Aperture-served LLM endpoint and renders ongoing analysis in either a full-screen console session or a web session that can stay local to the host or be exposed on the tailnet.
 
+Bare `thresher analyze` runs the console workflow by default. The explicit entrypoints are:
+
+- `thresher analyze console`
+- `thresher analyze local` as an alias of `console`
+- `thresher analyze web`
+
 ## Endpoint Model
 
 `thresher` does not manage API keys or talk to model vendors directly for analysis.
@@ -58,10 +64,22 @@ The analysis session will stop or pause uploads when configured limits are reach
 
 ## Live And File-Based Analysis
 
-Analyze live capture:
+Analyze live capture with the default console workflow:
 
 ```bash
 thresher analyze --model gpt-4o
+```
+
+Run the explicit console subcommand:
+
+```bash
+thresher analyze console --model gpt-4o
+```
+
+Run the console alias:
+
+```bash
+thresher analyze local --model gpt-4o
 ```
 
 Analyze a saved JSONL packet stream:
@@ -73,13 +91,13 @@ thresher analyze --model gpt-4o --input capture.jsonl
 Start the localhost web session:
 
 ```bash
-thresher. analyze --model gpt-4o --mode web
+thresher analyze web --model gpt-4o
 ```
 
 Start the tailnet-served web session:
 
 ```bash
-thresher analyze --model gpt-4o --mode web --web-access tailnet
+thresher analyze web --model gpt-4o --web-access tailnet
 ```
 
 ## Session UI
@@ -103,7 +121,7 @@ Console controls:
 
 ## Web Mode
 
-`--mode web` starts the browser UI and prints the resolved URL.
+`thresher analyze web` starts the browser UI and prints the resolved URL.
 
 Use `--web-access` to control how that UI is exposed:
 
@@ -124,7 +142,7 @@ The web UI shows:
 
 The intended remote workflow is:
 
-1. Run `thresher analyze --mode web --web-access tailnet` on the machine closest to the target capture source.
+1. Run `thresher analyze web --web-access tailnet` on the machine closest to the target capture source.
 2. Let that host perform live capture, batching, pause or resume, model changes, and Aperture requests locally.
 3. Open the printed tailnet URL from another device on the same tailnet to watch the session and use the browser controls remotely.
 
@@ -138,5 +156,5 @@ This does not change the decoded packet substrate. Wrapper-derived fields such a
 4. Verify packet batches are uploaded and analysis output appears incrementally in the analysis pane
 5. Verify configured session limits stop uploads before excessive volume is sent and surface a clear limit state
 6. If model discovery is available, verify model switching updates the active model in the UI
-7. Run `thresher analyze --model gpt-4o --mode web` and confirm the printed URL is localhost-only by default
-8. Run `thresher analyze --model gpt-4o --mode web --web-access tailnet` and confirm the printed URL is tailnet-reachable and only usable by peers with `lbrlabs.com/cap/thresher`
+7. Run `thresher analyze web --model gpt-4o` and confirm the printed URL is localhost-only by default
+8. Run `thresher analyze web --model gpt-4o --web-access tailnet` and confirm the printed URL is tailnet-reachable and only usable by peers with `lbrlabs.com/cap/thresher`

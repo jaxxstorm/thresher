@@ -128,7 +128,7 @@ func TestAnalyzeDefaultsToConsoleMode(t *testing.T) {
 	}
 }
 
-func TestAnalyzeSupportsExplicitWebMode(t *testing.T) {
+func TestAnalyzeSupportsExplicitWebSubcommand(t *testing.T) {
 	resetAnalyzeStateForTest()
 	originalPresenterFactory := newAnalyzeWebPresenter
 	t.Cleanup(func() { newAnalyzeWebPresenter = originalPresenterFactory })
@@ -158,16 +158,16 @@ func TestAnalyzeSupportsExplicitWebMode(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	output, err := executeCommand("analyze", "--endpoint", server.URL, "--model", "configured-model", "--mode", "web", "--input", path)
+	output, err := executeCommand("analyze", "web", "--endpoint", server.URL, "--model", "configured-model", "--input", path)
 	if err != nil {
-		t.Fatalf("executeCommand(analyze --mode web --input) error = %v", err)
+		t.Fatalf("executeCommand(analyze web --input) error = %v", err)
 	}
 	if !strings.Contains(output, "mode=web web-access=local url=http://127.0.0.1:41001") {
 		t.Fatalf("expected web startup output, got %q", output)
 	}
 }
 
-func TestAnalyzeWebModeSupportsExplicitTailnetAccess(t *testing.T) {
+func TestAnalyzeWebSubcommandSupportsExplicitTailnetAccess(t *testing.T) {
 	resetAnalyzeStateForTest()
 	originalPresenterFactory := newAnalyzeWebPresenter
 	t.Cleanup(func() { newAnalyzeWebPresenter = originalPresenterFactory })
@@ -197,16 +197,16 @@ func TestAnalyzeWebModeSupportsExplicitTailnetAccess(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	output, err := executeCommand("analyze", "--endpoint", server.URL, "--model", "configured-model", "--mode", "web", "--web-access", "tailnet", "--input", path)
+	output, err := executeCommand("analyze", "web", "--endpoint", server.URL, "--model", "configured-model", "--web-access", "tailnet", "--input", path)
 	if err != nil {
-		t.Fatalf("executeCommand(analyze --mode web --web-access tailnet --input) error = %v", err)
+		t.Fatalf("executeCommand(analyze web --web-access tailnet --input) error = %v", err)
 	}
 	if !strings.Contains(output, "mode=web web-access=tailnet url=http://thresher.tail.ts.net:41234") {
 		t.Fatalf("expected tailnet startup output, got %q", output)
 	}
 }
 
-func TestAnalyzeWebModePreservesWrapperFieldsAndSessionLimits(t *testing.T) {
+func TestAnalyzeWebSubcommandPreservesWrapperFieldsAndSessionLimits(t *testing.T) {
 	resetAnalyzeStateForTest()
 	originalPresenterFactory := newAnalyzeWebPresenter
 	t.Cleanup(func() { newAnalyzeWebPresenter = originalPresenterFactory })
@@ -259,9 +259,9 @@ func TestAnalyzeWebModePreservesWrapperFieldsAndSessionLimits(t *testing.T) {
 
 	output, err := executeCommand(
 		"analyze",
+		"web",
 		"--endpoint", server.URL,
 		"--model", "configured-model",
-		"--mode", "web",
 		"--batch-packets", "1",
 		"--session-packets", "1",
 		"--input", path,
@@ -277,32 +277,63 @@ func TestAnalyzeWebModePreservesWrapperFieldsAndSessionLimits(t *testing.T) {
 	}
 }
 
-func TestAnalyzeRejectsInvalidMode(t *testing.T) {
+func TestAnalyzeConsoleSubcommandMatchesBareAnalyze(t *testing.T) {
 	resetAnalyzeStateForTest()
-	viper.Set("analyze.model", "gpt-4o")
-	analyzeArgs.mode = "browser"
-
-	err := runAnalyze(context.Background(), io.Discard, io.Discard)
-	if err == nil {
-		t.Fatal("expected invalid mode error")
+	original := openAnalyzeCaptureStream
+	openAnalyzeCaptureStream = func(context.Context) (io.ReadCloser, error) {
+		return nil, errors.New("stop")
 	}
-	if !strings.Contains(err.Error(), "invalid analysis mode") {
-		t.Fatalf("unexpected error %v", err)
+	defer func() { openAnalyzeCaptureStream = original }()
+
+	bareOutput, bareErr := executeCommand("analyze", "--model", "gpt-4o")
+	if bareErr == nil {
+		t.Fatal("expected bare analyze to stop with stream error")
+	}
+	consoleOutput, consoleErr := executeCommand("analyze", "console", "--model", "gpt-4o")
+	if consoleErr == nil {
+		t.Fatal("expected analyze console to stop with stream error")
+	}
+	if !strings.Contains(bareOutput, "mode=console") || !strings.Contains(consoleOutput, "mode=console") {
+		t.Fatalf("expected both console entrypoints to report console mode, bare=%q console=%q", bareOutput, consoleOutput)
 	}
 }
 
-func TestAnalyzeRejectsInvalidWebAccess(t *testing.T) {
+func TestAnalyzeLocalAliasMatchesConsoleWorkflow(t *testing.T) {
 	resetAnalyzeStateForTest()
-	viper.Set("analyze.model", "gpt-4o")
-	analyzeArgs.mode = "web"
-	analyzeArgs.webAccess = "public"
-
-	err := runAnalyze(context.Background(), io.Discard, io.Discard)
-	if err == nil {
-		t.Fatal("expected invalid web access error")
+	original := openAnalyzeCaptureStream
+	openAnalyzeCaptureStream = func(context.Context) (io.ReadCloser, error) {
+		return nil, errors.New("stop")
 	}
-	if !strings.Contains(err.Error(), "invalid analysis web access") {
-		t.Fatalf("unexpected error %v", err)
+	defer func() { openAnalyzeCaptureStream = original }()
+
+	output, err := executeCommand("analyze", "local", "--model", "gpt-4o")
+	if err == nil {
+		t.Fatal("expected analyze local to stop with stream error")
+	}
+	if !strings.Contains(output, "mode=console") {
+		t.Fatalf("expected local alias to resolve to console workflow, got %q", output)
+	}
+}
+
+func TestAnalyzeRejectsModeFlag(t *testing.T) {
+	resetAnalyzeStateForTest()
+	_, err := executeCommand("analyze", "--mode", "web")
+	if err == nil {
+		t.Fatal("expected unknown mode flag error")
+	}
+	if !strings.Contains(err.Error(), "unknown flag: --mode") {
+		t.Fatalf("expected unknown flag error, got %v", err)
+	}
+}
+
+func TestAnalyzeConsoleRejectsWebOnlyFlag(t *testing.T) {
+	resetAnalyzeStateForTest()
+	_, err := executeCommand("analyze", "console", "--web-access", "tailnet")
+	if err == nil {
+		t.Fatal("expected unknown web-access flag error")
+	}
+	if !strings.Contains(err.Error(), "unknown flag: --web-access") {
+		t.Fatalf("expected unknown flag error, got %v", err)
 	}
 }
 
@@ -363,7 +394,6 @@ func resetAnalyzeStateForTest() {
 	analyzeArgs.endpoint = ""
 	analyzeArgs.model = ""
 	analyzeArgs.input = ""
-	analyzeArgs.mode = ""
 	analyzeArgs.webAccess = ""
 	analyzeArgs.endpointStyle = ""
 	analyzeArgs.batchPackets = 0
