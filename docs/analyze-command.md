@@ -132,6 +132,31 @@ Use `--web-access` to control how that UI is exposed:
 
 Remote web access requires the connecting peer to have the Tailscale capability `lbrlabs.com/cap/thresher`. The entire web UI, including the page, snapshot feed, live events, and control actions, is treated as one permission surface under that capability.
 
+Example tailnet policy grant:
+
+```json
+"grants": [
+  {
+    "src": ["group:engineering"],
+    "dst": ["tag:thresher-host"],
+    "ip": ["tcp:443"],
+    "app": {
+      "lbrlabs.com/cap/thresher": [
+        {}
+      ]
+    }
+  }
+]
+```
+
+Adjust the selectors for your tailnet:
+
+- `src`: the users, groups, or devices that should be allowed to open the remote analysis UI
+- `dst`: the device or tag on the machine running `thresher analyze web --web-access tailnet`
+- `ip`: the network-layer access needed for the Serve endpoint, typically `tcp:443`
+
+The app capability is only forwarded when the requesting peer matches both the network-layer grant and the app grant. If the browser reaches the Thresher page but the app returns `missing required capability`, the usual cause is that the tailnet policy allows HTTPS access but does not grant `lbrlabs.com/cap/thresher` to that source/destination pair.
+
 If `/thresher/` is already claimed by another Serve handler on the host, `thresher analyze web --web-access tailnet` fails fast instead of overwriting that route.
 
 The web UI shows:
