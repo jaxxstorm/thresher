@@ -209,6 +209,7 @@ func (p *WebPresenter) routes(runCtx context.Context, cancel context.CancelFunc,
 			snapshot.Status = "quit requested"
 			snapshot.LastEvent = "quit requested from web UI"
 			snapshot.Phase = "complete"
+			snapshot.Completed = true
 			pushSnapshotEvent(snapshot, snapshot.LastEvent)
 		})
 		writeJSON(w, map[string]bool{"ok": true})
