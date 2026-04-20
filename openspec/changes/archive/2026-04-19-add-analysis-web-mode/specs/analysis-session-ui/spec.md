@@ -1,8 +1,5 @@
-# analysis-session-ui Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by syncing change add-aperture-analyze-command. Update Purpose after archive.
-## Requirements
 ### Requirement: Analysis sessions provide a live interactive UI
 The system SHALL present a Bubble Tea-based full-window interactive UI for analysis sessions that run in `console` mode, use the available terminal area, refresh incrementally as session state changes, and separate high-value session status from long-form analysis output.
 

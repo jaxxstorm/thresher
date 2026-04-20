@@ -3,9 +3,11 @@ package analyze
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,11 +20,14 @@ func TestClientAnalyzeChatCompletions(t *testing.T) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
+		if got := r.Header.Get("User-Agent"); got != "thresher/v1.2.3" {
+			t.Fatalf("expected versioned user agent, got %q", got)
+		}
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"analysis text"}}]}`))
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, EndpointChatCompletions)
+	client := NewClient(server.URL, EndpointChatCompletions, "thresher/v1.2.3")
 	resp, err := client.Analyze(context.Background(), AnalyzeRequest{Model: "gpt-4o", Prompt: "analyze"})
 	if err != nil {
 		t.Fatalf("Analyze() error = %v", err)
@@ -37,11 +42,14 @@ func TestClientListModels(t *testing.T) {
 		if r.URL.Path != "/v1/models" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
+		if got := r.Header.Get("User-Agent"); got != "thresher/v1.2.3" {
+			t.Fatalf("expected versioned user agent, got %q", got)
+		}
 		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o"},{"id":"claude-haiku"}]}`))
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, EndpointAuto)
+	client := NewClient(server.URL, EndpointAuto, "thresher/v1.2.3")
 	models, err := client.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("ListModels() error = %v", err)
@@ -71,7 +79,7 @@ func TestSessionRunReaderBatchesInput(t *testing.T) {
 		t.Fatalf("RunReader() error = %v", err)
 	}
 
-	snapshot := waitForSnapshot(t, session.ui, func(state UISnapshot) bool {
+	snapshot := waitForSnapshot(t, session.State(), func(state SessionSnapshot) bool {
 		return state.UploadedBatches == 1 && len(state.Analysis) == 1
 	})
 	if snapshot.Records != 1 {
@@ -108,7 +116,7 @@ func TestSessionRunReaderMarksLimitReached(t *testing.T) {
 		t.Fatalf("RunReader() error = %v", err)
 	}
 
-	snapshot := waitForSnapshot(t, session.ui, func(state UISnapshot) bool {
+	snapshot := waitForSnapshot(t, session.State(), func(state SessionSnapshot) bool {
 		return state.LimitReached
 	})
 	if snapshot.Records != 2 {
@@ -135,19 +143,183 @@ func TestBuildBatchPromptIncludesAnnotations(t *testing.T) {
 	}
 }
 
-func waitForSnapshot(t *testing.T, model *Model, ok func(UISnapshot) bool) UISnapshot {
+func TestBuildBatchPromptPreservesWrapperFields(t *testing.T) {
+	prompt := buildBatchPrompt([]capture.Record{{
+		Number:         1,
+		Time:           "2026-04-18T00:00:00Z",
+		Src:            "100.64.0.1",
+		Dst:            "100.64.0.2",
+		Protocol:       "TCP",
+		Info:           "1234 -> 443",
+		PathID:         7,
+		SNAT:           "100.64.0.10",
+		DNAT:           "100.64.0.20",
+		PayloadPreview: "GET /health",
+	}})
+	for _, needle := range []string{"path_id=7", "snat=100.64.0.10", "dnat=100.64.0.20", `payload="GET /health"`} {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("expected prompt to contain %q, got %q", needle, prompt)
+		}
+	}
+}
+
+func TestNewClientDefaultsUserAgent(t *testing.T) {
+	client := NewClient("http://ai", EndpointAuto, "")
+	if client.userAgent != "thresher/dev" {
+		t.Fatalf("expected default user agent, got %q", client.userAgent)
+	}
+}
+
+func TestWebPresenterServesSnapshotAndEvents(t *testing.T) {
+	state := NewStateStore(Config{Model: "gpt-4o"})
+	presenter := NewWebPresenter(Config{WebAccess: WebAccessLocal})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- presenter.Run(ctx, state, func(context.Context) error {
+			state.Update(func(snapshot *SessionSnapshot) {
+				snapshot.Status = "analysis updated"
+				snapshot.Phase = "collecting"
+				snapshot.Analysis = []string{"browser output"}
+				pushSnapshotEvent(snapshot, "browser output")
+			})
+			time.Sleep(100 * time.Millisecond)
+			return nil
+		})
+	}()
+
+	url := <-presenter.Ready()
+	if !IsLocalhostURL(url) {
+		t.Fatalf("expected localhost url, got %q", url)
+	}
+
+	resp, err := http.Get(url + "/snapshot")
+	if err != nil {
+		t.Fatalf("snapshot request error = %v", err)
+	}
+	defer resp.Body.Close()
+	var snapshot SessionSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if snapshot.Model != "gpt-4o" {
+		t.Fatalf("expected model in snapshot, got %#v", snapshot)
+	}
+
+	pageResp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("page request error = %v", err)
+	}
+	defer pageResp.Body.Close()
+	pageBody, err := io.ReadAll(pageResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(page) error = %v", err)
+	}
+	for _, needle := range []string{"Apply model", "Pause analysis", "Quit session"} {
+		if !bytes.Contains(pageBody, []byte(needle)) {
+			t.Fatalf("expected page to contain %q, got %q", needle, pageBody)
+		}
+	}
+
+	eventsResp, err := http.Get(url + "/events")
+	if err != nil {
+		t.Fatalf("events request error = %v", err)
+	}
+	defer eventsResp.Body.Close()
+	body, err := io.ReadAll(eventsResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if !bytes.Contains(body, []byte("event: snapshot")) {
+		t.Fatalf("expected sse snapshot event, got %q", body)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	_, err = http.Get(url + "/snapshot")
+	if err == nil {
+		t.Fatal("expected server shutdown after session completion")
+	}
+}
+
+func TestWebPresenterControlsPauseModelAndQuit(t *testing.T) {
+	state := NewStateStore(Config{Endpoint: "http://ai", Model: "gpt-4o", BatchPackets: 20, BatchBytes: 65536, SessionPackets: 500, SessionBytes: 2097152})
+	state.Update(func(snapshot *SessionSnapshot) {
+		snapshot.Models = []string{"gpt-4o", "claude-sonnet-4-5"}
+	})
+
+	presenter := NewWebPresenter(Config{WebAccess: WebAccessLocal})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- presenter.Run(ctx, state, func(runCtx context.Context) error {
+			<-runCtx.Done()
+			return nil
+		})
+	}()
+
+	url := <-presenter.Ready()
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.Post(url+"/control/model", "application/json", strings.NewReader(`{"model":"claude-sonnet-4-5"}`))
+	if err != nil {
+		t.Fatalf("model control request error = %v", err)
+	}
+	resp.Body.Close()
+	snapshot := waitForSnapshot(t, state, func(state SessionSnapshot) bool {
+		return state.Model == "claude-sonnet-4-5"
+	})
+	if snapshot.Model != "claude-sonnet-4-5" {
+		t.Fatalf("expected model switch to persist, got %#v", snapshot)
+	}
+
+	resp, err = client.Post(url+"/control/pause", "application/json", strings.NewReader(`{"paused":true}`))
+	if err != nil {
+		t.Fatalf("pause control request error = %v", err)
+	}
+	resp.Body.Close()
+	snapshot = waitForSnapshot(t, state, func(state SessionSnapshot) bool {
+		return state.Paused
+	})
+	if !snapshot.Paused || snapshot.Phase != "paused" {
+		t.Fatalf("expected paused state, got %#v", snapshot)
+	}
+
+	resp, err = client.Post(url+"/control/quit", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("quit control request error = %v", err)
+	}
+	resp.Body.Close()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	_, err = client.Get(url + "/snapshot")
+	if err == nil {
+		t.Fatal("expected server shutdown after quit")
+	}
+}
+
+func waitForSnapshot(t *testing.T, state *StateStore, ok func(SessionSnapshot) bool) SessionSnapshot {
 	t.Helper()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		snapshot := model.Snapshot()
+		snapshot := state.Snapshot()
 		if ok(snapshot) {
 			return snapshot
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	snapshot := model.Snapshot()
+	snapshot := state.Snapshot()
 	t.Fatalf("condition not met, last snapshot: %#v", snapshot)
-	return UISnapshot{}
+	return SessionSnapshot{}
 }
