@@ -2,16 +2,20 @@ package analyze
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
-	"os"
+	neturl "net/url"
+	"slices"
+	"strconv"
 	"strings"
 
-	"tailscale.com/client/tailscale/apitype"
+	"tailscale.com/client/local"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
-	"tailscale.com/tsnet"
 )
 
 type WebAccess string
@@ -21,6 +25,11 @@ const (
 	WebAccessTailnet WebAccess = "tailnet"
 )
 
+const (
+	thresherServeMount             = "/thresher/"
+	tailscaleAppCapabilitiesHeader = "Tailscale-App-Capabilities"
+)
+
 const thresherCapability tailcfg.PeerCapability = "lbrlabs.com/cap/thresher"
 
 type webRuntime interface {
@@ -28,29 +37,21 @@ type webRuntime interface {
 }
 
 type webEndpoint struct {
-	listener net.Listener
-	baseURL  string
-	wrap     func(http.Handler) http.Handler
-	shutdown func(context.Context) error
-}
-
-type peerIdentityResolver interface {
-	WhoIs(context.Context, string) (*apitype.WhoIsResponse, error)
+	listener    net.Listener
+	baseURL     string
+	routePrefix string
+	wrap        func(http.Handler) http.Handler
+	shutdown    func(context.Context) error
 }
 
 type statusClient interface {
 	StatusWithoutPeers(context.Context) (*ipnstate.Status, error)
 }
 
-type tailscaleLocalClient interface {
-	peerIdentityResolver
+type serveConfigClient interface {
 	statusClient
-}
-
-type tsnetServer interface {
-	Listen(network, addr string) (net.Listener, error)
-	LocalClient() (tailscaleLocalClient, error)
-	Close() error
+	GetServeConfig(context.Context) (*ipn.ServeConfig, error)
+	SetServeConfig(context.Context, *ipn.ServeConfig) error
 }
 
 type localWebRuntime struct {
@@ -67,158 +68,209 @@ func (r localWebRuntime) Open(context.Context) (*webEndpoint, error) {
 		return nil, fmt.Errorf("starting analysis web listener: %w", err)
 	}
 	return &webEndpoint{
-		listener: listener,
-		baseURL:  "http://" + listener.Addr().String(),
-		wrap:     identityHTTPHandler,
-		shutdown: func(context.Context) error { return nil },
+		listener:    listener,
+		baseURL:     "http://" + listener.Addr().String(),
+		routePrefix: "/",
+		wrap:        identityHTTPHandler,
+		shutdown:    func(context.Context) error { return listener.Close() },
 	}, nil
 }
 
 type tailnetWebRuntime struct {
-	config     Config
-	newServer  func(Config) tsnetServer
-	listenAddr string
+	addr           string
+	newLocalClient func() serveConfigClient
 }
 
 func newWebRuntime(config Config) webRuntime {
 	if config.WebAccess == WebAccessTailnet {
 		return tailnetWebRuntime{
-			config:    config,
-			newServer: newTSNetServer,
+			addr:           "127.0.0.1:0",
+			newLocalClient: func() serveConfigClient { return &local.Client{} },
 		}
 	}
 	return localWebRuntime{addr: "127.0.0.1:0"}
 }
 
 func (r tailnetWebRuntime) Open(ctx context.Context) (*webEndpoint, error) {
-	listenAddr := r.listenAddr
-	if strings.TrimSpace(listenAddr) == "" {
-		listenAddr = ":0"
+	addr := r.addr
+	if strings.TrimSpace(addr) == "" {
+		addr = "127.0.0.1:0"
 	}
 
-	server := r.newServer(r.config)
-	listener, err := server.Listen("tcp", listenAddr)
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		_ = server.Close()
-		return nil, fmt.Errorf("starting analysis tailnet listener: %w", err)
+		return nil, fmt.Errorf("starting analysis localhost listener: %w", err)
 	}
 
-	client, err := server.LocalClient()
+	client := r.newLocalClient()
+	if client == nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("starting analysis tailnet access: tailscale local client unavailable")
+	}
+
+	baseURL, cleanup, err := configureServeAccess(ctx, client, listener.Addr().String())
 	if err != nil {
 		_ = listener.Close()
-		_ = server.Close()
-		return nil, fmt.Errorf("starting analysis tailnet local client: %w", err)
+		return nil, err
 	}
 
-	baseURL := advertisedTailnetURL(ctx, client, listener, defaultTSNetHostname())
 	return &webEndpoint{
-		listener: listener,
-		baseURL:  baseURL,
-		wrap: func(next http.Handler) http.Handler {
-			return authorizeTailnetRequests(client, next)
-		},
-		shutdown: func(context.Context) error {
-			_ = listener.Close()
-			return server.Close()
+		listener:    listener,
+		baseURL:     baseURL,
+		routePrefix: thresherServeMount,
+		wrap:        authorizeTailnetRequests,
+		shutdown: func(ctx context.Context) error {
+			return errors.Join(listener.Close(), cleanup(ctx))
 		},
 	}, nil
 }
 
-type tsnetServerAdapter struct {
-	*tsnet.Server
-}
-
-func (s *tsnetServerAdapter) LocalClient() (tailscaleLocalClient, error) {
-	return s.Server.LocalClient()
-}
-
-func newTSNetServer(Config) tsnetServer {
-	return &tsnetServerAdapter{Server: &tsnet.Server{Hostname: defaultTSNetHostname()}}
-}
-
-func defaultTSNetHostname() string {
-	host, err := os.Hostname()
+func configureServeAccess(ctx context.Context, client serveConfigClient, targetAddr string) (string, func(context.Context) error, error) {
+	host, err := advertisedTailnetHost(ctx, client)
 	if err != nil {
-		host = ""
-	}
-	host = strings.ToLower(strings.TrimSpace(host))
-	if host == "" {
-		return "thresher"
+		return "", nil, err
 	}
 
-	var b strings.Builder
-	lastDash := false
-	for _, r := range host {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-			lastDash = false
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-			lastDash = false
-		case r == '-':
-			if !lastDash && b.Len() > 0 {
-				b.WriteRune(r)
-				lastDash = true
-			}
-		default:
-			if !lastDash && b.Len() > 0 {
-				b.WriteRune('-')
-				lastDash = true
-			}
-		}
-	}
-
-	base := strings.Trim(b.String(), "-")
-	if base == "" {
-		base = "thresher"
-	}
-	if !strings.HasSuffix(base, "-thresher") {
-		base += "-thresher"
-	}
-	if len(base) > 63 {
-		base = strings.Trim(base[:63], "-")
-	}
-	if base == "" {
-		return "thresher"
-	}
-	return base
-}
-
-func advertisedTailnetURL(ctx context.Context, client statusClient, listener net.Listener, fallbackHost string) string {
-	host, port, err := net.SplitHostPort(listener.Addr().String())
+	current, err := client.GetServeConfig(ctx)
 	if err != nil {
-		return "http://" + listener.Addr().String()
+		return "", nil, fmt.Errorf("reading Tailscale Serve config: %w", err)
+	}
+	next := cloneServeConfig(current)
+
+	if err := claimServeMount(next, host, targetAddr); err != nil {
+		return "", nil, err
+	}
+	if err := client.SetServeConfig(ctx, next); err != nil {
+		return "", nil, fmt.Errorf("updating Tailscale Serve config: %w", err)
 	}
 
-	if status, err := client.StatusWithoutPeers(ctx); err == nil && status != nil && status.Self != nil {
-		if dnsName := strings.TrimSuffix(status.Self.DNSName, "."); dnsName != "" {
-			host = dnsName
-		}
-	}
-	if strings.TrimSpace(host) == "" {
-		host = fallbackHost
-	}
-	return "http://" + net.JoinHostPort(host, port)
-}
-
-func authorizeTailnetRequests(resolver peerIdentityResolver, next http.Handler) http.Handler {
-	if resolver == nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "tailnet identity unavailable", http.StatusUnauthorized)
-		})
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		who, err := resolver.WhoIs(r.Context(), r.RemoteAddr)
+	baseURL := "https://" + host + thresherServeMount
+	cleanup := func(ctx context.Context) error {
+		current, err := client.GetServeConfig(ctx)
 		if err != nil {
-			http.Error(w, "tailnet identity required", http.StatusUnauthorized)
-			return
+			return fmt.Errorf("reading Tailscale Serve config for cleanup: %w", err)
 		}
-		if who == nil || !who.CapMap.HasCapability(thresherCapability) {
+		if current == nil {
+			return nil
+		}
+		handler := getServeMountHandler(current, host, 443, thresherServeMount)
+		if !isThresherServeHandler(handler) {
+			return nil
+		}
+
+		next := cloneServeConfig(current)
+		next.RemoveWebHandler(host, 443, []string{thresherServeMount}, false)
+		if err := client.SetServeConfig(ctx, next); err != nil {
+			return fmt.Errorf("cleaning up Tailscale Serve config: %w", err)
+		}
+		return nil
+	}
+
+	return baseURL, cleanup, nil
+}
+
+func advertisedTailnetHost(ctx context.Context, client statusClient) (string, error) {
+	status, err := client.StatusWithoutPeers(ctx)
+	if err != nil {
+		return "", fmt.Errorf("reading Tailscale status: %w", err)
+	}
+	if status == nil || status.Self == nil {
+		return "", fmt.Errorf("reading Tailscale status: local device unavailable")
+	}
+	host := strings.TrimSuffix(strings.TrimSpace(status.Self.DNSName), ".")
+	if host == "" {
+		return "", fmt.Errorf("reading Tailscale status: local device has no MagicDNS name")
+	}
+	return host, nil
+}
+
+func cloneServeConfig(config *ipn.ServeConfig) *ipn.ServeConfig {
+	if config == nil {
+		return &ipn.ServeConfig{}
+	}
+	return config.Clone()
+}
+
+func claimServeMount(config *ipn.ServeConfig, host string, targetAddr string) error {
+	if config == nil {
+		config = &ipn.ServeConfig{}
+	}
+
+	handler := getServeMountHandler(config, host, 443, thresherServeMount)
+	if handler != nil && !isThresherServeHandler(handler) {
+		return fmt.Errorf("analysis tailnet route %s is already claimed on %s; remove or move the existing Tailscale Serve handler before retrying", thresherServeMount, host)
+	}
+
+	config.SetWebHandler(&ipn.HTTPHandler{
+		Proxy:         "http://" + targetAddr,
+		AcceptAppCaps: []tailcfg.PeerCapability{thresherCapability},
+	}, host, 443, thresherServeMount, true, "")
+	return nil
+}
+
+func getServeMountHandler(config *ipn.ServeConfig, host string, port uint16, mount string) *ipn.HTTPHandler {
+	if config == nil || config.Web == nil {
+		return nil
+	}
+
+	hp := ipn.HostPort(net.JoinHostPort(host, strconv.Itoa(int(port))))
+	web := config.Web[hp]
+	if web == nil || web.Handlers == nil {
+		return nil
+	}
+	return web.Handlers[mount]
+}
+
+func isThresherServeHandler(handler *ipn.HTTPHandler) bool {
+	if handler == nil {
+		return false
+	}
+	if !slices.Equal(handler.AcceptAppCaps, []tailcfg.PeerCapability{thresherCapability}) {
+		return false
+	}
+	return isLoopbackProxy(handler.Proxy)
+}
+
+func isLoopbackProxy(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+
+	if strings.Contains(raw, "://") {
+		parsed, err := neturl.Parse(raw)
+		if err != nil {
+			return false
+		}
+		host := parsed.Hostname()
+		return host == "127.0.0.1" || host == "localhost"
+	}
+
+	host, _, err := net.SplitHostPort(raw)
+	if err != nil {
+		return false
+	}
+	return host == "127.0.0.1" || host == "localhost"
+}
+
+func authorizeTailnetRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := strings.TrimSpace(r.Header.Get(tailscaleAppCapabilitiesHeader))
+		if raw == "" {
 			http.Error(w, "missing required capability", http.StatusForbidden)
 			return
 		}
+
+		var caps map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &caps); err != nil {
+			http.Error(w, "invalid forwarded capability header", http.StatusForbidden)
+			return
+		}
+		if _, ok := caps[string(thresherCapability)]; !ok {
+			http.Error(w, "missing required capability", http.StatusForbidden)
+			return
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }

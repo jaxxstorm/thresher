@@ -1,9 +1,10 @@
-# tsnet-remote-web-access Specification
+## RENAMED Requirements
 
-## Purpose
-TBD - created by syncing change add-tsnet-remote-web-access. Update Purpose after archive.
+### FROM: Analyze web sessions can be exposed on the tailnet through tsnet
+### TO: Analyze web sessions can be exposed on the tailnet through tailscale serve
 
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: Analyze web sessions can be exposed on the tailnet through tailscale serve
 The system SHALL allow `thresher analyze web` to run with a tailnet-served HTTP route backed by the host's existing `tailscaled` Serve configuration so the active analysis session can be viewed from another device on the same Tailscale network without creating a separate Thresher-managed node.
 
@@ -33,6 +34,8 @@ The system SHALL authorize remote access to the analyze web UI using the Tailsca
 - **WHEN** the remote analyze web UI serves the page, snapshot feed, event stream, and control actions
 - **THEN** those routes remain under one shared path surface for capability purposes
 - **AND** the capability contract does not require separate permission endpoints for each individual route
+
+## ADDED Requirements
 
 ### Requirement: Serve-backed tailnet access preserves unrelated host Serve config
 The system SHALL merge Thresher's remote web route into the existing host Serve configuration without overwriting unrelated Serve routes.

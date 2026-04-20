@@ -11,24 +11,48 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jaxxstorm/thresher/internal/analyze"
 	"github.com/spf13/viper"
 )
 
 type stubAnalyzeWebPresenter struct {
-	url string
+	url     string
+	readyCh chan string
+	run     func(context.Context, *analyze.StateStore, func(context.Context) error) error
 }
 
 func (p *stubAnalyzeWebPresenter) Ready() <-chan string {
+	if p.readyCh != nil {
+		return p.readyCh
+	}
 	ch := make(chan string, 1)
 	ch <- p.url
 	return ch
 }
 
 func (p *stubAnalyzeWebPresenter) Run(ctx context.Context, state *analyze.StateStore, worker func(context.Context) error) error {
+	if p.run != nil {
+		return p.run(ctx, state, worker)
+	}
 	return worker(ctx)
+}
+
+type blockingWriter struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.started)
+	})
+	<-w.release
+	return len(p), nil
 }
 
 func TestAnalyzeAppearsInRootHelp(t *testing.T) {
@@ -175,7 +199,7 @@ func TestAnalyzeWebSubcommandSupportsExplicitTailnetAccess(t *testing.T) {
 		if config.WebAccess != analyze.WebAccessTailnet {
 			t.Fatalf("expected explicit tailnet web access, got %q", config.WebAccess)
 		}
-		return &stubAnalyzeWebPresenter{url: "http://thresher.tail.ts.net:41234"}
+		return &stubAnalyzeWebPresenter{url: "https://thresher.tail.ts.net/thresher/"}
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -201,7 +225,7 @@ func TestAnalyzeWebSubcommandSupportsExplicitTailnetAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeCommand(analyze web --web-access tailnet --input) error = %v", err)
 	}
-	if !strings.Contains(output, "mode=web web-access=tailnet url=http://thresher.tail.ts.net:41234") {
+	if !strings.Contains(output, "mode=web web-access=tailnet url=https://thresher.tail.ts.net/thresher/") {
 		t.Fatalf("expected tailnet startup output, got %q", output)
 	}
 }
@@ -274,6 +298,54 @@ func TestAnalyzeWebSubcommandPreservesWrapperFieldsAndSessionLimits(t *testing.T
 	}
 	if requests != 1 {
 		t.Fatalf("expected session packet limit to allow one upload, got %d requests", requests)
+	}
+}
+
+func TestAnalyzeWebStartupWaitsForReadyURLWrite(t *testing.T) {
+	resetAnalyzeStateForTest()
+	originalPresenterFactory := newAnalyzeWebPresenter
+	t.Cleanup(func() { newAnalyzeWebPresenter = originalPresenterFactory })
+
+	readyCh := make(chan string)
+	newAnalyzeWebPresenter = func(config analyze.Config) analyzeWebPresenter {
+		return &stubAnalyzeWebPresenter{
+			readyCh: readyCh,
+			run: func(context.Context, *analyze.StateStore, func(context.Context) error) error {
+				readyCh <- "http://127.0.0.1:41003"
+				return nil
+			},
+		}
+	}
+
+	analyzeArgs.endpoint = "http://ai"
+	analyzeArgs.model = "gpt-4o"
+	writer := &blockingWriter{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runAnalyzeWithMode(context.Background(), io.Discard, writer, analyzeModeWeb)
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("runAnalyzeWithMode returned before the ready URL write completed: %v", err)
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for web startup status write")
+	}
+
+	close(writer.release)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runAnalyzeWithMode() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runAnalyzeWithMode to finish after status write")
 	}
 }
 

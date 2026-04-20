@@ -153,13 +153,35 @@ func runAnalyzeWithMode(ctx context.Context, stdout, stderr io.Writer, mode stri
 
 	session := analyze.NewSession(config)
 	presenter := analyze.Presenter(analyze.NewConsolePresenter(config))
+	runSession := func(p analyze.Presenter) error {
+		if analyzeArgs.input != "" {
+			file, err := os.Open(analyzeArgs.input)
+			if err != nil {
+				return fmt.Errorf("opening analyze input: %w", err)
+			}
+			defer file.Close()
+			return session.RunReaderWithPresenter(ctx, file, p)
+		}
+		return session.RunLiveWithPresenter(ctx, openAnalyzeCaptureStream, p)
+	}
+
 	if mode == analyzeModeWeb {
 		webPresenter := newAnalyzeWebPresenter(config)
 		presenter = webPresenter
+		errCh := make(chan error, 1)
 		go func() {
-			url := <-webPresenter.Ready()
-			_, _ = fmt.Fprintf(stderr, "analyze started; endpoint=%s model=%s mode=%s web-access=%s url=%s\n", config.Endpoint, config.Model, mode, config.WebAccess, url)
+			errCh <- runSession(webPresenter)
 		}()
+
+		select {
+		case url := <-webPresenter.Ready():
+			if _, err := fmt.Fprintf(stderr, "analyze started; endpoint=%s model=%s mode=%s web-access=%s url=%s\n", config.Endpoint, config.Model, mode, config.WebAccess, url); err != nil {
+				return fmt.Errorf("writing analyze status: %w", err)
+			}
+			return <-errCh
+		case err := <-errCh:
+			return err
+		}
 	} else if !isInteractiveAnalyzeSession() {
 		if _, err := fmt.Fprintf(stderr, "analyze started; endpoint=%s model=%s mode=%s\n", config.Endpoint, config.Model, mode); err != nil {
 			return fmt.Errorf("writing analyze status: %w", err)
@@ -167,15 +189,7 @@ func runAnalyzeWithMode(ctx context.Context, stdout, stderr io.Writer, mode stri
 	}
 
 	_ = stdout
-	if analyzeArgs.input != "" {
-		file, err := os.Open(analyzeArgs.input)
-		if err != nil {
-			return fmt.Errorf("opening analyze input: %w", err)
-		}
-		defer file.Close()
-		return session.RunReaderWithPresenter(ctx, file, presenter)
-	}
-	return session.RunLiveWithPresenter(ctx, openAnalyzeCaptureStream, presenter)
+	return runSession(presenter)
 }
 
 func firstNonEmpty(values ...string) string {

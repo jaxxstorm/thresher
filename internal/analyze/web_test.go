@@ -10,9 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"tailscale.com/client/tailscale/apitype"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
-	"tailscale.com/tailcfg"
 )
 
 type fakeWebRuntime struct {
@@ -23,65 +22,59 @@ func (r fakeWebRuntime) Open(ctx context.Context) (*webEndpoint, error) {
 	return r.open(ctx)
 }
 
-type fakeTailnetClient struct {
-	who        *apitype.WhoIsResponse
-	whoErr     error
-	status     *ipnstate.Status
-	statusErr  error
-	remoteAddr []string
+type fakeServeClient struct {
+	serveConfig *ipn.ServeConfig
+	setConfigs  []*ipn.ServeConfig
+	status      *ipnstate.Status
+	getErr      error
+	setErr      error
+	statusErr   error
 }
 
-func (c *fakeTailnetClient) WhoIs(_ context.Context, remoteAddr string) (*apitype.WhoIsResponse, error) {
-	c.remoteAddr = append(c.remoteAddr, remoteAddr)
-	return c.who, c.whoErr
-}
-
-func (c *fakeTailnetClient) StatusWithoutPeers(context.Context) (*ipnstate.Status, error) {
-	return c.status, c.statusErr
-}
-
-type fakeTSNetServer struct {
-	listener       net.Listener
-	client         tailscaleLocalClient
-	listenNetwork  string
-	listenAddr     string
-	localClientErr error
-	closed         bool
-}
-
-func (s *fakeTSNetServer) Listen(network, addr string) (net.Listener, error) {
-	s.listenNetwork = network
-	s.listenAddr = addr
-	return s.listener, nil
-}
-
-func (s *fakeTSNetServer) LocalClient() (tailscaleLocalClient, error) {
-	if s.localClientErr != nil {
-		return nil, s.localClientErr
+func (c *fakeServeClient) GetServeConfig(context.Context) (*ipn.ServeConfig, error) {
+	if c.getErr != nil {
+		return nil, c.getErr
 	}
-	return s.client, nil
+	return cloneServeConfig(c.serveConfig), nil
 }
 
-func (s *fakeTSNetServer) Close() error {
-	s.closed = true
+func (c *fakeServeClient) SetServeConfig(_ context.Context, config *ipn.ServeConfig) error {
+	if c.setErr != nil {
+		return c.setErr
+	}
+	next := cloneServeConfig(config)
+	c.setConfigs = append(c.setConfigs, next)
+	c.serveConfig = cloneServeConfig(next)
 	return nil
 }
 
-func TestTailnetWebRuntimeAdvertisesDNSNameAndClosesServer(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen() error = %v", err)
+func (c *fakeServeClient) StatusWithoutPeers(context.Context) (*ipnstate.Status, error) {
+	if c.statusErr != nil {
+		return nil, c.statusErr
+	}
+	return c.status, nil
+}
+
+func TestTailnetWebRuntimeConfiguresServeMountAndCleansUp(t *testing.T) {
+	client := &fakeServeClient{
+		status: &ipnstate.Status{Self: &ipnstate.PeerStatus{DNSName: "thresher.tail.ts.net."}},
+		serveConfig: &ipn.ServeConfig{
+			ETag: "etag-1",
+			Web: map[ipn.HostPort]*ipn.WebServerConfig{
+				"thresher.tail.ts.net:443": {
+					Handlers: map[string]*ipn.HTTPHandler{
+						"/existing/": {Text: "keep"},
+					},
+				},
+			},
+			TCP: map[uint16]*ipn.TCPPortHandler{
+				443: {HTTPS: true},
+			},
+		},
 	}
 
-	client := &fakeTailnetClient{
-		status: &ipnstate.Status{Self: &ipnstate.PeerStatus{DNSName: "thresher.tail.ts.net."}},
-	}
-	server := &fakeTSNetServer{listener: listener, client: client}
 	runtime := tailnetWebRuntime{
-		config: Config{WebAccess: WebAccessTailnet},
-		newServer: func(Config) tsnetServer {
-			return server
-		},
+		newLocalClient: func() serveConfigClient { return client },
 	}
 
 	endpoint, err := runtime.Open(context.Background())
@@ -89,27 +82,83 @@ func TestTailnetWebRuntimeAdvertisesDNSNameAndClosesServer(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 
-	_, port, err := net.SplitHostPort(listener.Addr().String())
-	if err != nil {
-		t.Fatalf("SplitHostPort() error = %v", err)
+	if endpoint.baseURL != "https://thresher.tail.ts.net/thresher/" {
+		t.Fatalf("unexpected ready url %q", endpoint.baseURL)
 	}
-	if endpoint.baseURL != "http://thresher.tail.ts.net:"+port {
-		t.Fatalf("unexpected tailnet url %q", endpoint.baseURL)
+	if endpoint.routePrefix != thresherServeMount {
+		t.Fatalf("unexpected route prefix %q", endpoint.routePrefix)
 	}
-	if server.listenNetwork != "tcp" || server.listenAddr != ":0" {
-		t.Fatalf("unexpected tsnet listen args network=%q addr=%q", server.listenNetwork, server.listenAddr)
+	if len(client.setConfigs) != 1 {
+		t.Fatalf("expected one Serve config update, got %d", len(client.setConfigs))
+	}
+
+	cfg := client.setConfigs[0]
+	if cfg.ETag != "etag-1" {
+		t.Fatalf("expected Serve config ETag to be preserved, got %q", cfg.ETag)
+	}
+	handler := getServeMountHandler(cfg, "thresher.tail.ts.net", 443, thresherServeMount)
+	if handler == nil {
+		t.Fatal("expected Thresher Serve mount to be configured")
+	}
+	if !isThresherServeHandler(handler) {
+		t.Fatalf("expected Thresher-owned handler, got %#v", handler)
+	}
+	if !strings.Contains(handler.Proxy, endpoint.listener.Addr().String()) {
+		t.Fatalf("expected proxy target to include listener address, got %q", handler.Proxy)
+	}
+	if getServeMountHandler(cfg, "thresher.tail.ts.net", 443, "/existing/") == nil {
+		t.Fatal("expected unrelated Serve mount to be preserved")
 	}
 
 	if err := endpoint.shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown() error = %v", err)
 	}
-	if !server.closed {
-		t.Fatal("expected tsnet server to close")
+	if len(client.setConfigs) != 2 {
+		t.Fatalf("expected cleanup Serve config update, got %d total updates", len(client.setConfigs))
+	}
+	cleaned := client.setConfigs[1]
+	if getServeMountHandler(cleaned, "thresher.tail.ts.net", 443, thresherServeMount) != nil {
+		t.Fatal("expected Thresher Serve mount to be cleaned up")
+	}
+	if getServeMountHandler(cleaned, "thresher.tail.ts.net", 443, "/existing/") == nil {
+		t.Fatal("expected unrelated Serve mount to survive cleanup")
+	}
+}
+
+func TestTailnetWebRuntimeRejectsClaimedServeMount(t *testing.T) {
+	client := &fakeServeClient{
+		status: &ipnstate.Status{Self: &ipnstate.PeerStatus{DNSName: "thresher.tail.ts.net."}},
+		serveConfig: &ipn.ServeConfig{
+			Web: map[ipn.HostPort]*ipn.WebServerConfig{
+				"thresher.tail.ts.net:443": {
+					Handlers: map[string]*ipn.HTTPHandler{
+						thresherServeMount: {Text: "owned by something else"},
+					},
+				},
+			},
+			TCP: map[uint16]*ipn.TCPPortHandler{
+				443: {HTTPS: true},
+			},
+		},
+	}
+
+	runtime := tailnetWebRuntime{
+		newLocalClient: func() serveConfigClient { return client },
+	}
+
+	_, err := runtime.Open(context.Background())
+	if err == nil {
+		t.Fatal("expected Serve mount collision error")
+	}
+	if !strings.Contains(err.Error(), "already claimed") {
+		t.Fatalf("expected claimed-route error, got %v", err)
+	}
+	if len(client.setConfigs) != 0 {
+		t.Fatalf("expected no Serve config updates on collision, got %d", len(client.setConfigs))
 	}
 }
 
 func TestWebPresenterTailnetAccessDeniesAllRoutesWithoutCapability(t *testing.T) {
-	client := &fakeTailnetClient{who: &apitype.WhoIsResponse{CapMap: tailcfg.PeerCapMap{}}}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -118,12 +167,11 @@ func TestWebPresenterTailnetAccessDeniesAllRoutesWithoutCapability(t *testing.T)
 	presenter := newWebPresenterWithRuntime(fakeWebRuntime{
 		open: func(context.Context) (*webEndpoint, error) {
 			return &webEndpoint{
-				listener: listener,
-				baseURL:  "http://" + listener.Addr().String(),
-				wrap: func(next http.Handler) http.Handler {
-					return authorizeTailnetRequests(client, next)
-				},
-				shutdown: func(context.Context) error { return nil },
+				listener:    listener,
+				baseURL:     "http://" + listener.Addr().String() + thresherServeMount,
+				routePrefix: thresherServeMount,
+				wrap:        authorizeTailnetRequests,
+				shutdown:    func(context.Context) error { return listener.Close() },
 			}, nil
 		},
 	})
@@ -141,16 +189,22 @@ func TestWebPresenterTailnetAccessDeniesAllRoutesWithoutCapability(t *testing.T)
 
 	url := <-presenter.Ready()
 	httpClient := &http.Client{Timeout: 2 * time.Second}
-	for _, route := range []string{"/", "/snapshot", "/events", "/control/pause", "/control/model"} {
-		req, err := http.NewRequest(http.MethodGet, url+route, nil)
+	for _, route := range []string{"", "snapshot", "events", "control/pause", "control/model"} {
+		method := http.MethodGet
+		body := io.Reader(nil)
+		if strings.HasPrefix(route, "control/") {
+			method = http.MethodPost
+			body = strings.NewReader(`{"model":"gpt-4o","paused":true}`)
+		}
+
+		req, err := http.NewRequest(method, url+route, body)
 		if err != nil {
 			t.Fatalf("NewRequest(%s) error = %v", route, err)
 		}
-		if strings.HasPrefix(route, "/control/") {
-			req.Method = http.MethodPost
-			req.Body = io.NopCloser(strings.NewReader(`{"model":"gpt-4o","paused":true}`))
+		if method == http.MethodPost {
 			req.Header.Set("Content-Type", "application/json")
 		}
+
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			t.Fatalf("Do(%s) error = %v", route, err)
@@ -167,9 +221,7 @@ func TestWebPresenterTailnetAccessDeniesAllRoutesWithoutCapability(t *testing.T)
 	}
 }
 
-func TestWebPresenterTailnetAccessAllowsSnapshotControlsAndQuit(t *testing.T) {
-	capMap := tailcfg.PeerCapMap{thresherCapability: nil}
-	client := &fakeTailnetClient{who: &apitype.WhoIsResponse{CapMap: capMap}}
+func TestWebPresenterTailnetAccessUsesServePrefixAndControls(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -183,12 +235,11 @@ func TestWebPresenterTailnetAccessAllowsSnapshotControlsAndQuit(t *testing.T) {
 	presenter := newWebPresenterWithRuntime(fakeWebRuntime{
 		open: func(context.Context) (*webEndpoint, error) {
 			return &webEndpoint{
-				listener: listener,
-				baseURL:  "http://" + listener.Addr().String(),
-				wrap: func(next http.Handler) http.Handler {
-					return authorizeTailnetRequests(client, next)
-				},
-				shutdown: func(context.Context) error { return nil },
+				listener:    listener,
+				baseURL:     "http://" + listener.Addr().String() + thresherServeMount,
+				routePrefix: thresherServeMount,
+				wrap:        authorizeTailnetRequests,
+				shutdown:    func(context.Context) error { return listener.Close() },
 			}, nil
 		},
 	})
@@ -207,9 +258,51 @@ func TestWebPresenterTailnetAccessAllowsSnapshotControlsAndQuit(t *testing.T) {
 	url := <-presenter.Ready()
 	httpClient := &http.Client{Timeout: 2 * time.Second}
 
-	resp, err := httpClient.Get(url + "/snapshot")
+	req, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String()+"/snapshot", nil)
 	if err != nil {
-		t.Fatalf("Get(snapshot) error = %v", err)
+		t.Fatalf("NewRequest(unprefixed snapshot) error = %v", err)
+	}
+	addCapabilityHeader(req)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do(unprefixed snapshot) error = %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected unprefixed snapshot route to 404, got %d", resp.StatusCode)
+	}
+
+	req, err = http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("NewRequest(page) error = %v", err)
+	}
+	addCapabilityHeader(req)
+	resp, err = httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do(page) error = %v", err)
+	}
+	pageBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("ReadAll(page) error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected page ok, got %d", resp.StatusCode)
+	}
+	for _, needle := range []string{"fetch('snapshot')", "new EventSource('events')", "postJSON('control/model'"} {
+		if !strings.Contains(string(pageBody), needle) {
+			t.Fatalf("expected page to contain %q", needle)
+		}
+	}
+
+	req, err = http.NewRequest(http.MethodGet, url+"snapshot", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(snapshot) error = %v", err)
+	}
+	addCapabilityHeader(req)
+	resp, err = httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do(snapshot) error = %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -223,35 +316,53 @@ func TestWebPresenterTailnetAccessAllowsSnapshotControlsAndQuit(t *testing.T) {
 		t.Fatalf("unexpected snapshot %#v", snapshot)
 	}
 
-	resp, err = httpClient.Post(url+"/control/model", "application/json", strings.NewReader(`{"model":"claude-haiku-4-5"}`))
+	req, err = http.NewRequest(http.MethodPost, url+"control/model", strings.NewReader(`{"model":"claude-haiku-4-5"}`))
 	if err != nil {
-		t.Fatalf("Post(model) error = %v", err)
+		t.Fatalf("NewRequest(model) error = %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	addCapabilityHeader(req)
+	resp, err = httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do(model) error = %v", err)
 	}
 	resp.Body.Close()
-	if got := waitForSnapshot(t, state, func(state SessionSnapshot) bool { return state.Model == "claude-haiku-4-5" }).Model; got != "claude-haiku-4-5" {
+	if got := waitForSnapshot(t, state, func(snapshot SessionSnapshot) bool { return snapshot.Model == "claude-haiku-4-5" }).Model; got != "claude-haiku-4-5" {
 		t.Fatalf("expected switched model, got %q", got)
 	}
 
-	resp, err = httpClient.Post(url+"/control/pause", "application/json", strings.NewReader(`{"paused":true}`))
+	req, err = http.NewRequest(http.MethodPost, url+"control/pause", strings.NewReader(`{"paused":true}`))
 	if err != nil {
-		t.Fatalf("Post(pause) error = %v", err)
+		t.Fatalf("NewRequest(pause) error = %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	addCapabilityHeader(req)
+	resp, err = httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do(pause) error = %v", err)
 	}
 	resp.Body.Close()
-	if !waitForSnapshot(t, state, func(state SessionSnapshot) bool { return state.Paused }).Paused {
+	if !waitForSnapshot(t, state, func(snapshot SessionSnapshot) bool { return snapshot.Paused }).Paused {
 		t.Fatal("expected paused state")
 	}
 
-	resp, err = httpClient.Post(url+"/control/quit", "application/json", strings.NewReader(`{}`))
+	req, err = http.NewRequest(http.MethodPost, url+"control/quit", strings.NewReader(`{}`))
 	if err != nil {
-		t.Fatalf("Post(quit) error = %v", err)
+		t.Fatalf("NewRequest(quit) error = %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	addCapabilityHeader(req)
+	resp, err = httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do(quit) error = %v", err)
 	}
 	resp.Body.Close()
 
 	if err := <-errCh; err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	_, err = httpClient.Get(url + "/snapshot")
-	if err == nil {
-		t.Fatal("expected wrapped server shutdown after quit")
-	}
+}
+
+func addCapabilityHeader(req *http.Request) {
+	req.Header.Set(tailscaleAppCapabilitiesHeader, `{"lbrlabs.com/cap/thresher":[true]}`)
 }

@@ -26,7 +26,6 @@ func executeCommandContext(ctx context.Context, args ...string) (string, error) 
 	analyzeArgs.input = ""
 	analyzeArgs.webAccess = ""
 	analyzeArgs.endpointStyle = ""
-	analyzeArgs.webAccess = false
 	analyzeArgs.batchPackets = 0
 	analyzeArgs.batchBytes = 0
 	analyzeArgs.sessionPackets = 0

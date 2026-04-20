@@ -75,7 +75,6 @@ func (s *StateStore) Subscribe(buffer int) (<-chan SessionSnapshot, func()) {
 	return ch, func() {
 		s.mu.Lock()
 		delete(s.subscribers, ch)
-		close(ch)
 		s.mu.Unlock()
 	}
 }

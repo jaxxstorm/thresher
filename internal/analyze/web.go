@@ -5,19 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"sync"
 	"time"
 )
 
 type WebPresenter struct {
-	runtime   webRuntime
-	baseURL   string
-	httpSrv   *http.Server
-	readyOnce sync.Once
-	readyCh   chan string
+	runtime     webRuntime
+	baseURL     string
+	routePrefix string
+	httpSrv     *http.Server
+	readyOnce   sync.Once
+	readyCh     chan string
 }
 
 type webModelRequest struct {
@@ -55,9 +56,10 @@ func (p *WebPresenter) Run(ctx context.Context, state *StateStore, worker func(c
 	}()
 
 	p.baseURL = endpoint.baseURL
+	p.routePrefix = endpoint.routePrefix
 	p.publishReady(p.baseURL)
 
-	handler := p.routes(runCtx, cancel, state)
+	handler := p.routes(runCtx, cancel, state, endpoint.routePrefix)
 	if endpoint.wrap != nil {
 		handler = endpoint.wrap(handler)
 	}
@@ -96,9 +98,9 @@ func (p *WebPresenter) Run(ctx context.Context, state *StateStore, worker func(c
 	return workerErr
 }
 
-func (p *WebPresenter) routes(runCtx context.Context, cancel context.CancelFunc, state *StateStore) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+func (p *WebPresenter) routes(runCtx context.Context, cancel context.CancelFunc, state *StateStore, routePrefix string) http.Handler {
+	app := http.NewServeMux()
+	app.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
@@ -106,14 +108,14 @@ func (p *WebPresenter) routes(runCtx context.Context, cancel context.CancelFunc,
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(webPage))
 	})
-	mux.HandleFunc("/snapshot", func(w http.ResponseWriter, r *http.Request) {
+	app.HandleFunc("/snapshot", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		writeJSON(w, state.Snapshot())
 	})
-	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+	app.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -153,7 +155,7 @@ func (p *WebPresenter) routes(runCtx context.Context, cancel context.CancelFunc,
 			}
 		}
 	})
-	mux.HandleFunc("/control/model", func(w http.ResponseWriter, r *http.Request) {
+	app.HandleFunc("/control/model", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -178,7 +180,7 @@ func (p *WebPresenter) routes(runCtx context.Context, cancel context.CancelFunc,
 		state.SetActiveModel(model)
 		writeJSON(w, state.Snapshot())
 	})
-	mux.HandleFunc("/control/pause", func(w http.ResponseWriter, r *http.Request) {
+	app.HandleFunc("/control/pause", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -199,7 +201,7 @@ func (p *WebPresenter) routes(runCtx context.Context, cancel context.CancelFunc,
 		state.SetPaused(paused)
 		writeJSON(w, state.Snapshot())
 	})
-	mux.HandleFunc("/control/quit", func(w http.ResponseWriter, r *http.Request) {
+	app.HandleFunc("/control/quit", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -218,7 +220,19 @@ func (p *WebPresenter) routes(runCtx context.Context, cancel context.CancelFunc,
 		}
 		go cancel()
 	})
-	return mux
+
+	prefix := normalizeRoutePrefix(routePrefix)
+	if prefix == "/" {
+		return app
+	}
+
+	root := http.NewServeMux()
+	trimmed := strings.TrimSuffix(prefix, "/")
+	root.HandleFunc(trimmed, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, prefix, http.StatusTemporaryRedirect)
+	})
+	root.Handle(prefix, http.StripPrefix(trimmed, app))
+	return root
 }
 
 func (p *WebPresenter) publishReady(url string) {
@@ -535,7 +549,7 @@ const webPage = `<!doctype html>
   <main class="shell">
     <header class="masthead">
       <div class="brand">
-        <div class="eyebrow">Local Analysis Session</div>
+        <div class="eyebrow">Browser Analysis Session</div>
         <h1>thresher analyze</h1>
         <div class="subtitle">Live packet analysis in web mode, with the same model, pause, and session controls as the console workflow.</div>
       </div>
@@ -800,7 +814,7 @@ const webPage = `<!doctype html>
     applyModelButton.addEventListener('click', async () => {
       if (!modelSelect.value) return;
       try {
-        const snapshot = await postJSON('/control/model', { model: modelSelect.value });
+        const snapshot = await postJSON('control/model', { model: modelSelect.value });
         if (snapshot) render(snapshot);
       } catch (error) {
         console.error(error);
@@ -810,7 +824,7 @@ const webPage = `<!doctype html>
     pauseButton.addEventListener('click', async () => {
       if (!currentSnapshot) return;
       try {
-        const snapshot = await postJSON('/control/pause', { paused: !currentSnapshot.paused });
+        const snapshot = await postJSON('control/pause', { paused: !currentSnapshot.paused });
         if (snapshot) render(snapshot);
       } catch (error) {
         console.error(error);
@@ -820,18 +834,18 @@ const webPage = `<!doctype html>
     quitButton.addEventListener('click', async () => {
       quitButton.disabled = true;
       try {
-        await postJSON('/control/quit', {});
+        await postJSON('control/quit', {});
       } catch (error) {
         console.error(error);
       }
     });
 
-    fetch('/snapshot')
+    fetch('snapshot')
       .then((response) => response.json())
       .then(render)
       .catch((error) => console.error(error));
 
-    const stream = new EventSource('/events');
+    const stream = new EventSource('events');
     stream.addEventListener('snapshot', (event) => render(JSON.parse(event.data)));
     stream.addEventListener('error', () => {
       if (currentSnapshot && (currentSnapshot.completed || currentSnapshot.error)) {
@@ -843,13 +857,30 @@ const webPage = `<!doctype html>
 </html>`
 
 func IsLocalhostURL(raw string) bool {
-	if !strings.HasPrefix(raw, "http://") {
-		return false
-	}
-	hostPort := strings.TrimPrefix(raw, "http://")
-	host, _, err := net.SplitHostPort(hostPort)
+	parsed, err := neturl.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return false
 	}
+	if parsed.Scheme != "http" {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return false
+	}
 	return host == "127.0.0.1" || host == "localhost"
+}
+
+func normalizeRoutePrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" || prefix == "/" {
+		return "/"
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return prefix
 }

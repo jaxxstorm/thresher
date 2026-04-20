@@ -1,9 +1,5 @@
-# analysis-web-ui Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by syncing change add-analysis-web-mode. Update Purpose after archive.
-
-## Requirements
 ### Requirement: Analysis sessions can be viewed in a localhost web UI
 The system SHALL support a web analysis mode that starts an HTTP server for `thresher analyze` and exposes the active session through a browser-accessible web UI. The web server SHALL support a default localhost-only form and an explicit tailnet-served form for remote access, and the browser workflow SHALL be started through the explicit `thresher analyze web` subcommand rather than a `--mode` flag.
 
@@ -23,6 +19,8 @@ The system SHALL support a web analysis mode that starts an HTTP server for `thr
 - **THEN** it listens only on localhost interfaces
 - **AND** it does not expose non-local interfaces in the default configuration
 
+## ADDED Requirements
+
 ### Requirement: Web UI routes work behind a Serve-backed path prefix
 The system SHALL allow the analyze web UI to run behind a dedicated path prefix when tailnet access is published through Tailscale Serve.
 
@@ -30,26 +28,3 @@ The system SHALL allow the analyze web UI to run behind a dedicated path prefix 
 - **WHEN** a user opens the Serve-published analysis web UI from another tailnet device
 - **THEN** the page, snapshot feed, live event stream, and control actions resolve beneath the same dedicated path prefix
 - **AND** the browser does not rely on root-relative URLs that would escape that published path
-
-### Requirement: Web UI shows live session state and analysis output
-The system SHALL render the current analysis session state in the web UI, including session status, packet and batch counters, active model information, and analysis text as new responses are received.
-
-#### Scenario: Browser shows current session snapshot
-- **WHEN** a user opens the localhost web UI during an active analysis session
-- **THEN** the page shows the current status, counters, and any analysis text already received
-
-#### Scenario: Browser receives live analysis updates
-- **WHEN** new analysis output arrives after the page has loaded
-- **THEN** the web UI updates without requiring a full page refresh
-- **AND** previously displayed analysis output remains visible alongside the new content
-
-### Requirement: Web UI reflects session completion and failure states
-The system SHALL show when the analysis session completes, is canceled, reaches a configured limit, or fails to contact the analysis endpoint.
-
-#### Scenario: Limit reached is visible in the browser
-- **WHEN** the configured analysis session limit is reached while web mode is active
-- **THEN** the web UI shows that uploads have stopped because the limit was hit
-
-#### Scenario: Request failure is visible in the browser
-- **WHEN** an analysis request fails during a web session
-- **THEN** the web UI shows the failure state and the most recent error context
