@@ -13,12 +13,11 @@ import (
 )
 
 type WebPresenter struct {
-	runtime     webRuntime
-	baseURL     string
-	routePrefix string
-	httpSrv     *http.Server
-	readyOnce   sync.Once
-	readyCh     chan string
+	runtime   webRuntime
+	baseURL   string
+	httpSrv   *http.Server
+	readyOnce sync.Once
+	readyCh   chan string
 }
 
 type webModelRequest struct {
@@ -56,7 +55,6 @@ func (p *WebPresenter) Run(ctx context.Context, state *StateStore, worker func(c
 	}()
 
 	p.baseURL = endpoint.baseURL
-	p.routePrefix = endpoint.routePrefix
 	p.publishReady(p.baseURL)
 
 	handler := p.routes(runCtx, cancel, state, endpoint.routePrefix)
@@ -221,18 +219,8 @@ func (p *WebPresenter) routes(runCtx context.Context, cancel context.CancelFunc,
 		go cancel()
 	})
 
-	prefix := normalizeRoutePrefix(routePrefix)
-	if prefix == "/" {
-		return app
-	}
-
-	root := http.NewServeMux()
-	trimmed := strings.TrimSuffix(prefix, "/")
-	root.HandleFunc(trimmed, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, prefix, http.StatusTemporaryRedirect)
-	})
-	root.Handle(prefix, http.StripPrefix(trimmed, app))
-	return root
+	_ = routePrefix
+	return app
 }
 
 func (p *WebPresenter) publishReady(url string) {
@@ -869,18 +857,4 @@ func IsLocalhostURL(raw string) bool {
 		return false
 	}
 	return host == "127.0.0.1" || host == "localhost"
-}
-
-func normalizeRoutePrefix(prefix string) string {
-	prefix = strings.TrimSpace(prefix)
-	if prefix == "" || prefix == "/" {
-		return "/"
-	}
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	if !strings.HasSuffix(prefix, "/") {
-		prefix += "/"
-	}
-	return prefix
 }

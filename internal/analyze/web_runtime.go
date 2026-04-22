@@ -117,7 +117,7 @@ func (r tailnetWebRuntime) Open(ctx context.Context) (*webEndpoint, error) {
 	return &webEndpoint{
 		listener:    listener,
 		baseURL:     baseURL,
-		routePrefix: thresherServeMount,
+		routePrefix: "/",
 		wrap:        authorizeTailnetRequests,
 		shutdown: func(ctx context.Context) error {
 			return errors.Join(listener.Close(), cleanup(ctx))

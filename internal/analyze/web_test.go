@@ -85,7 +85,7 @@ func TestTailnetWebRuntimeConfiguresServeMountAndCleansUp(t *testing.T) {
 	if endpoint.baseURL != "https://thresher.tail.ts.net/thresher/" {
 		t.Fatalf("unexpected ready url %q", endpoint.baseURL)
 	}
-	if endpoint.routePrefix != thresherServeMount {
+	if endpoint.routePrefix != "/" {
 		t.Fatalf("unexpected route prefix %q", endpoint.routePrefix)
 	}
 	if len(client.setConfigs) != 1 {
@@ -169,7 +169,7 @@ func TestWebPresenterTailnetAccessDeniesAllRoutesWithoutCapability(t *testing.T)
 			return &webEndpoint{
 				listener:    listener,
 				baseURL:     "http://" + listener.Addr().String() + thresherServeMount,
-				routePrefix: thresherServeMount,
+				routePrefix: "/",
 				wrap:        authorizeTailnetRequests,
 				shutdown:    func(context.Context) error { return listener.Close() },
 			}, nil
@@ -188,6 +188,10 @@ func TestWebPresenterTailnetAccessDeniesAllRoutesWithoutCapability(t *testing.T)
 	}()
 
 	url := <-presenter.Ready()
+	if url != "http://"+listener.Addr().String()+thresherServeMount {
+		t.Fatalf("unexpected ready url %q", url)
+	}
+	directURL := "http://" + listener.Addr().String() + "/"
 	httpClient := &http.Client{Timeout: 2 * time.Second}
 	for _, route := range []string{"", "snapshot", "events", "control/pause", "control/model"} {
 		method := http.MethodGet
@@ -197,7 +201,7 @@ func TestWebPresenterTailnetAccessDeniesAllRoutesWithoutCapability(t *testing.T)
 			body = strings.NewReader(`{"model":"gpt-4o","paused":true}`)
 		}
 
-		req, err := http.NewRequest(method, url+route, body)
+		req, err := http.NewRequest(method, directURL+route, body)
 		if err != nil {
 			t.Fatalf("NewRequest(%s) error = %v", route, err)
 		}
@@ -237,7 +241,7 @@ func TestWebPresenterTailnetAccessUsesServePrefixAndControls(t *testing.T) {
 			return &webEndpoint{
 				listener:    listener,
 				baseURL:     "http://" + listener.Addr().String() + thresherServeMount,
-				routePrefix: thresherServeMount,
+				routePrefix: "/",
 				wrap:        authorizeTailnetRequests,
 				shutdown:    func(context.Context) error { return listener.Close() },
 			}, nil
@@ -256,6 +260,10 @@ func TestWebPresenterTailnetAccessUsesServePrefixAndControls(t *testing.T) {
 	}()
 
 	url := <-presenter.Ready()
+	if url != "http://"+listener.Addr().String()+thresherServeMount {
+		t.Fatalf("unexpected ready url %q", url)
+	}
+	directURL := "http://" + listener.Addr().String() + "/"
 	httpClient := &http.Client{Timeout: 2 * time.Second}
 
 	req, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String()+"/snapshot", nil)
@@ -268,11 +276,11 @@ func TestWebPresenterTailnetAccessUsesServePrefixAndControls(t *testing.T) {
 		t.Fatalf("Do(unprefixed snapshot) error = %v", err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected unprefixed snapshot route to 404, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected unprefixed backend snapshot route to be available, got %d", resp.StatusCode)
 	}
 
-	req, err = http.NewRequest(http.MethodGet, url, nil)
+	req, err = http.NewRequest(http.MethodGet, directURL, nil)
 	if err != nil {
 		t.Fatalf("NewRequest(page) error = %v", err)
 	}
@@ -295,7 +303,7 @@ func TestWebPresenterTailnetAccessUsesServePrefixAndControls(t *testing.T) {
 		}
 	}
 
-	req, err = http.NewRequest(http.MethodGet, url+"snapshot", nil)
+	req, err = http.NewRequest(http.MethodGet, directURL+"snapshot", nil)
 	if err != nil {
 		t.Fatalf("NewRequest(snapshot) error = %v", err)
 	}
@@ -316,7 +324,7 @@ func TestWebPresenterTailnetAccessUsesServePrefixAndControls(t *testing.T) {
 		t.Fatalf("unexpected snapshot %#v", snapshot)
 	}
 
-	req, err = http.NewRequest(http.MethodPost, url+"control/model", strings.NewReader(`{"model":"claude-haiku-4-5"}`))
+	req, err = http.NewRequest(http.MethodPost, directURL+"control/model", strings.NewReader(`{"model":"claude-haiku-4-5"}`))
 	if err != nil {
 		t.Fatalf("NewRequest(model) error = %v", err)
 	}
@@ -331,7 +339,7 @@ func TestWebPresenterTailnetAccessUsesServePrefixAndControls(t *testing.T) {
 		t.Fatalf("expected switched model, got %q", got)
 	}
 
-	req, err = http.NewRequest(http.MethodPost, url+"control/pause", strings.NewReader(`{"paused":true}`))
+	req, err = http.NewRequest(http.MethodPost, directURL+"control/pause", strings.NewReader(`{"paused":true}`))
 	if err != nil {
 		t.Fatalf("NewRequest(pause) error = %v", err)
 	}
@@ -346,7 +354,7 @@ func TestWebPresenterTailnetAccessUsesServePrefixAndControls(t *testing.T) {
 		t.Fatal("expected paused state")
 	}
 
-	req, err = http.NewRequest(http.MethodPost, url+"control/quit", strings.NewReader(`{}`))
+	req, err = http.NewRequest(http.MethodPost, directURL+"control/quit", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatalf("NewRequest(quit) error = %v", err)
 	}
