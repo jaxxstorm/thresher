@@ -13,32 +13,34 @@ import (
 )
 
 type Model struct {
-	mu              sync.RWMutex
-	config          Config
-	state           *StateStore
-	cancel          context.CancelFunc
-	width           int
-	height          int
-	status          string
-	lastEvent       string
-	phase           string
-	model           string
-	models          []ModelInfo
-	selected        int
-	paused          bool
-	records         int
-	totalBytes      int
-	pendingPackets  int
-	pendingBytes    int
-	uploadedBatches int
-	inFlight        bool
-	limitReached    bool
-	analysis        []string
-	events          []string
-	focus           paneFocus
-	analysisOffset  int
-	modelOffset     int
-	quitting        bool
+	mu                 sync.RWMutex
+	config             Config
+	state              *StateStore
+	sessionID          string
+	sessionFingerprint string
+	cancel             context.CancelFunc
+	width              int
+	height             int
+	status             string
+	lastEvent          string
+	phase              string
+	model              string
+	models             []ModelInfo
+	selected           int
+	paused             bool
+	records            int
+	totalBytes         int
+	pendingPackets     int
+	pendingBytes       int
+	uploadedBatches    int
+	inFlight           bool
+	limitReached       bool
+	analysis           []string
+	events             []string
+	focus              paneFocus
+	analysisOffset     int
+	modelOffset        int
+	quitting           bool
 }
 
 type snapshotMsg SessionSnapshot
@@ -282,6 +284,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) applySnapshot(snapshot SessionSnapshot) {
+	m.sessionID = snapshot.SessionID
+	m.sessionFingerprint = snapshot.SessionFingerprint
 	m.status = snapshot.Status
 	m.lastEvent = snapshot.LastEvent
 	m.phase = snapshot.Phase
@@ -329,13 +333,15 @@ func (m *Model) View() string {
 	headerLines := []string{
 		palette.header.Render(padRight(" THRESHER ANALYZE ", m.width)),
 		palette.subtle.Render(padRight(" "+truncateLine(m.headerSummary(), max(1, m.width-1)), m.width)),
+		palette.subtle.Render(padRight(" "+truncateLine("Session ID: "+m.sessionID, max(1, m.width-1)), m.width)),
+		palette.subtle.Render(padRight(" "+truncateLine("Chat fingerprint: "+m.sessionFingerprint, max(1, m.width-1)), m.width)),
 		palette.help.Render(padRight(" tab focus pane  ↑/↓ scroll or select  enter apply  p pause/resume  q quit ", m.width)),
 	}
 
 	remainingHeight := max(6, m.height-len(headerLines))
 	summaryHeight := 7
 	if m.width < 110 {
-		summaryHeight = 11
+		summaryHeight = 9
 	}
 	if summaryHeight > remainingHeight-3 {
 		summaryHeight = max(3, remainingHeight/2)
@@ -376,21 +382,23 @@ func (m *Model) Snapshot() UISnapshot {
 	defer m.mu.RUnlock()
 	return UISnapshot{
 		SessionSnapshot: SessionSnapshot{
-			Status:          m.status,
-			LastEvent:       m.lastEvent,
-			Phase:           m.phase,
-			Model:           m.model,
-			Records:         m.records,
-			TotalBytes:      m.totalBytes,
-			PendingPackets:  m.pendingPackets,
-			PendingBytes:    m.pendingBytes,
-			UploadedBatches: m.uploadedBatches,
-			InFlight:        m.inFlight,
-			LimitReached:    m.limitReached,
-			Paused:          m.paused,
-			Models:          modelIDs(m.models),
-			Analysis:        append([]string(nil), m.analysis...),
-			Events:          append([]string(nil), m.events...),
+			SessionID:          m.sessionID,
+			SessionFingerprint: m.sessionFingerprint,
+			Status:             m.status,
+			LastEvent:          m.lastEvent,
+			Phase:              m.phase,
+			Model:              m.model,
+			Records:            m.records,
+			TotalBytes:         m.totalBytes,
+			PendingPackets:     m.pendingPackets,
+			PendingBytes:       m.pendingBytes,
+			UploadedBatches:    m.uploadedBatches,
+			InFlight:           m.inFlight,
+			LimitReached:       m.limitReached,
+			Paused:             m.paused,
+			Models:             modelIDs(m.models),
+			Analysis:           append([]string(nil), m.analysis...),
+			Events:             append([]string(nil), m.events...),
 		},
 		SelectedModel: m.selectedModel(),
 	}
@@ -739,11 +747,11 @@ func analysisPanelWidth(totalWidth int) int {
 }
 
 func analysisPanelHeight(totalWidth, totalHeight int) int {
-	headerHeight := 3
+	headerHeight := 5
 	remainingHeight := max(6, totalHeight-headerHeight)
 	summaryHeight := 7
 	if totalWidth < 110 {
-		summaryHeight = 11
+		summaryHeight = 9
 	}
 	if summaryHeight > remainingHeight-3 {
 		summaryHeight = max(3, remainingHeight/2)

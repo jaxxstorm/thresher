@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/google/uuid"
 	"github.com/jaxxstorm/thresher/internal/capture"
 )
 
@@ -27,6 +28,7 @@ type Config struct {
 }
 
 type Session struct {
+	id          string
 	client      *Client
 	config      Config
 	state       *StateStore
@@ -54,7 +56,13 @@ func NewSession(config Config) *Session {
 	}
 
 	client := NewClient(config.Endpoint, config.EndpointStyle, config.UserAgent)
-	return &Session{client: client, config: config, state: NewStateStore(config)}
+	id := "session_" + uuid.NewString()
+	state := NewStateStore(config)
+	state.Update(func(snapshot *SessionSnapshot) {
+		snapshot.SessionID = id
+		snapshot.SessionFingerprint = sessionFingerprint(id)
+	})
+	return &Session{id: id, client: client, config: config, state: state}
 }
 
 func (s *Session) State() *StateStore {
@@ -236,6 +244,7 @@ func (s *Session) flush(ctx context.Context) error {
 	})
 
 	resp, err := s.client.Analyze(ctx, AnalyzeRequest{
+		SessionID: s.id,
 		Model:     activeModel,
 		System:    "You are analyzing decoded Tailscale packet capture output. Explain what is happening, identify notable flows, failures, or unusual behavior, and be concise but informative.",
 		Prompt:    buildBatchPrompt(s.batch),

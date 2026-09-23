@@ -3,11 +3,14 @@ package analyze
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,15 +24,18 @@ const (
 )
 
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	style      EndpointStyle
-	userAgent  string
+	baseURL     string
+	httpClient  *http.Client
+	style       EndpointStyle
+	userAgent   string
+	mu          sync.RWMutex
+	modelStyles map[string]EndpointStyle
 }
 
 var defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 type AnalyzeRequest struct {
+	SessionID   string
 	Model       string
 	System      string
 	Prompt      string
@@ -42,7 +48,8 @@ type AnalyzeResponse struct {
 }
 
 type ModelInfo struct {
-	ID string `json:"id"`
+	ID                 string   `json:"id"`
+	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
 }
 
 func NewClient(baseURL string, style EndpointStyle, userAgent string) *Client {
@@ -55,22 +62,32 @@ func NewClient(baseURL string, style EndpointStyle, userAgent string) *Client {
 }
 
 func (c *Client) Analyze(ctx context.Context, req AnalyzeRequest) (AnalyzeResponse, error) {
+	if req.SessionID == "" {
+		return AnalyzeResponse{}, fmt.Errorf("analysis request requires a session ID")
+	}
 	style := c.style
 	if style == "" {
 		style = EndpointAuto
 	}
 	if style == EndpointAuto {
-		style = EndpointChatCompletions
+		c.mu.RLock()
+		style = c.modelStyles[req.Model]
+		c.mu.RUnlock()
+		if style == "" {
+			style = EndpointChatCompletions
+		}
 	}
 
 	var path string
 	var payload any
 	var decode func([]byte) (AnalyzeResponse, error)
+	var sessionHeader string
 
 	switch style {
 	case EndpointMessages:
 		path = "/v1/messages"
 		payload = map[string]any{
+			"metadata":   map[string]string{"user_id": req.SessionID},
 			"model":      req.Model,
 			"max_tokens": req.MaxTokens,
 			"messages": []map[string]string{{
@@ -80,6 +97,7 @@ func (c *Client) Analyze(ctx context.Context, req AnalyzeRequest) (AnalyzeRespon
 		}
 		decode = decodeMessagesResponse
 	case EndpointResponses:
+		sessionHeader = req.SessionID
 		path = "/v1/responses"
 		payload = map[string]any{
 			"model": req.Model,
@@ -90,6 +108,7 @@ func (c *Client) Analyze(ctx context.Context, req AnalyzeRequest) (AnalyzeRespon
 		}
 		decode = decodeResponsesResponse
 	default:
+		sessionHeader = sessionFingerprint(req.SessionID)
 		path = "/v1/chat/completions"
 		payload = map[string]any{
 			"model": req.Model,
@@ -112,6 +131,9 @@ func (c *Client) Analyze(ctx context.Context, req AnalyzeRequest) (AnalyzeRespon
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("User-Agent", c.userAgent)
+	if sessionHeader != "" {
+		httpReq.Header.Set("Session_id", sessionHeader)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -153,7 +175,27 @@ func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decoding model list: %w", err)
 	}
+	styles := make(map[string]EndpointStyle, len(payload.Data))
+	for _, model := range payload.Data {
+		// Prefer the existing chat shape when a model supports several APIs.
+		switch {
+		case slices.Contains(model.SupportedEndpoints, "/v1/chat/completions"):
+			styles[model.ID] = EndpointChatCompletions
+		case slices.Contains(model.SupportedEndpoints, "/v1/responses"):
+			styles[model.ID] = EndpointResponses
+		case slices.Contains(model.SupportedEndpoints, "/v1/messages"):
+			styles[model.ID] = EndpointMessages
+		}
+	}
+	c.mu.Lock()
+	c.modelStyles = styles
+	c.mu.Unlock()
 	return payload.Data, nil
+}
+
+func sessionFingerprint(id string) string {
+	digest := sha256.Sum256([]byte(id))
+	return fmt.Sprintf("%x", digest[:8])
 }
 
 func buildPrompt(system, prompt string) string {

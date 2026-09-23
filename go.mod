@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/go-git/go-git/v5 v5.16.5
 	github.com/google/gopacket v1.1.19
+	github.com/google/uuid v1.6.0
 	github.com/jaxxstorm/log v0.0.0-20260318153214-631c633e2071
 	github.com/jaxxstorm/vers v0.0.3
 	github.com/mattn/go-runewidth v0.0.16
@@ -60,7 +61,6 @@ require (
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

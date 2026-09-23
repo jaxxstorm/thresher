@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -8,6 +9,45 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jaxxstorm/thresher/internal/capture"
 )
+
+func TestModelSessionIdentity(t *testing.T) {
+	const sessionID = "session_12345678-1234-4234-8234-123456789abc"
+	const fingerprint = "0123456789abcdef"
+	state := NewStateStore(Config{Model: "gpt-4o"})
+	state.Update(func(snapshot *SessionSnapshot) {
+		snapshot.SessionID = sessionID
+		snapshot.SessionFingerprint = fingerprint
+		snapshot.Models = []string{"gpt-4o", "claude"}
+	})
+	model := NewBoundModel(Config{Model: "gpt-4o"}, state)
+	for _, msg := range []tea.Msg{
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")},
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")},
+		tea.KeyMsg{Type: tea.KeyTab},
+		tea.KeyMsg{Type: tea.KeyDown},
+		tea.KeyMsg{Type: tea.KeyEnter},
+	} {
+		model.Update(msg)
+		model.Update(snapshotMsg(state.Snapshot()))
+		if snapshot := model.Snapshot(); snapshot.SessionID != sessionID || snapshot.SessionFingerprint != fingerprint {
+			t.Fatalf("presenter lost session identity: %#v", snapshot)
+		}
+	}
+	for _, width := range []int{72, 140} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			model.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+			view := model.View()
+			for _, text := range []string{"Session ID: " + sessionID, "Chat fingerprint: " + fingerprint} {
+				if !strings.Contains(view, text) {
+					t.Fatalf("missing identity %q in view:\n%s", text, view)
+				}
+			}
+			if lipgloss.Width(view) > width || lipgloss.Height(view) > 24 {
+				t.Fatalf("identity metadata exceeds terminal dimensions:\n%s", view)
+			}
+		})
+	}
+}
 
 func TestModelTracksStructuredSessionState(t *testing.T) {
 	model := NewModel(Config{Endpoint: "http://ai", Model: "gpt-4o", BatchPackets: 20, BatchBytes: 65536, SessionPackets: 500, SessionBytes: 2097152})

@@ -27,6 +27,28 @@ Supported Aperture-compatible request shapes:
 
 Use `--endpoint-style` if you need to force a specific shape.
 
+The default `auto` style selects the active model's API from `supported_endpoints` returned by `/v1/models`. For example, `thresher analyze --model claude-haiku-4-5` automatically uses `/v1/messages` when Aperture advertises it. Selection is repeated from the discovered metadata after model switches, without another discovery request. When a model supports multiple APIs, Thresher prefers chat completions, then responses, then messages. If discovery fails or no recognized endpoint is advertised for the selected model, it falls back to chat completions. An explicit `--endpoint-style` always overrides discovery.
+
+## Aperture Session Tracking
+
+One `thresher analyze` invocation represents one grouped Aperture analysis session, in either console or web mode. Thresher creates a canonical `session_<uuid>` identifier once at startup and reuses it for every analysis upload. Batching, pausing and resuming, and switching the active model do not rotate the identifier.
+
+The console header and web Session panel show both the canonical **Session ID** and its **Chat fingerprint** as secondary metadata for correlation with Aperture Logs. The fingerprint is the first 8 bytes of the SHA-256 digest of the canonical ID, encoded as 16 lowercase hexadecimal characters. Web snapshots and live events expose these as `session_id` and `session_fingerprint`.
+
+The request mapping depends on the endpoint style:
+
+| Endpoint style | Analysis request | Tracking field | Value |
+| --- | --- | --- | --- |
+| `messages` | `/v1/messages` | JSON `metadata.user_id` | Canonical `session_<uuid>` ID |
+| `responses` | `/v1/responses` | HTTP `Session_id` header | Canonical `session_<uuid>` ID |
+| `chat-completions` | `/v1/chat/completions` | HTTP `Session_id` header | Chat fingerprint |
+
+With `auto`, tracking uses the mapping for the selected API above. The canonical identity stays stable even if a model switch selects a different API; Aperture's grouping across API styles is server-dependent.
+
+Model discovery through `/v1/models` is untracked setup traffic, not part of the grouped analysis conversation. Tracking only adds request metadata; it does not change packet-derived prompt fields such as `path_id`, `snat`, `dnat`, `payload_preview`, or DISCO metadata. The capture wrapper, including its 2-byte little-endian `path_id` and SNAT/DNAT handling, is unchanged.
+
+Session identity is not persisted. Quitting and starting another invocation creates a fresh ID and fingerprint, even with the same input, endpoint, and model. Pause/resume applies only within the running process; there is no cross-process session resume.
+
 ## Config Defaults
 
 Analysis defaults can be configured in `thresher.yaml`:
@@ -107,6 +129,7 @@ Console mode takes over the terminal window and keeps a live dashboard visible w
 The full-screen UI shows:
 
 - current endpoint, active model, and session state
+- canonical Session ID and Chat fingerprint for Aperture correlation
 - packet, byte, and batch counters
 - live status for buffering, uploads, pauses, and limit states
 - live analysis output from the model in a dedicated pane
@@ -162,6 +185,7 @@ If `/thresher/` is already claimed by another Serve handler on the host, `thresh
 The web UI shows:
 
 - current endpoint, active model, and session phase
+- canonical Session ID and Chat fingerprint for Aperture correlation
 - packet, byte, batch, and limit counters
 - live analysis updates as new responses arrive
 - recent session events
@@ -187,3 +211,11 @@ This does not change the decoded packet substrate. Wrapper-derived fields such a
 6. If model discovery is available, verify model switching updates the active model in the UI
 7. Run `thresher analyze web --model gpt-4o` and confirm the printed URL is localhost-only by default
 8. Run `thresher analyze web --model gpt-4o --web-access tailnet` and confirm the printed URL is the host's existing tailnet identity under `/thresher/`, is tailnet-reachable, and is only usable by peers with `lbrlabs.com/cap/thresher`
+
+### Verify Aperture Grouping
+
+1. Start a live console or web run against an Aperture-compatible endpoint with a small batch limit, for example `thresher analyze --endpoint http://ai --endpoint-style chat-completions --model gpt-4o --batch-packets 2`. Use an approved capture source and session limits large enough for several uploads.
+2. Record the displayed Session ID and Chat fingerprint. Let at least two batches complete, then open Aperture Logs at `http://ai/admin/logs` (or your endpoint's equivalent). Filter by the run's time window, model, and `thresher/<version>` user agent, and check the captured tracking fields against the table above. Confirm the uploads appear in one grouped session. Aperture's stored session key can differ from the submitted tracking value; for example, a messages request carrying `metadata.user_id = session_<uuid>` can appear under an `ancc_...` key. Use the stored key from the log entry for session API lookups, rather than assuming the displayed Thresher ID is that key.
+3. Pause and resume the running analysis. If discovery provides another supported model, switch to it and allow another upload. Confirm both displayed identifiers remain unchanged and later uploads remain in the same Aperture group.
+4. Inspect requests using Aperture's request view or a controlled test endpoint. Verify the tracking field matches the table above, `/v1/models` carries no session tracking, and packet context still includes the same `path_id`, `snat`, `dnat`, `payload_preview`, and DISCO details as the decoded input where applicable.
+5. Quit and repeat with the same arguments. Confirm the new run has a different ID and fingerprint and appears as a separate Aperture session. Repeat for the other endpoint styles with compatible models, and verify the metadata is visible in both console and web modes.

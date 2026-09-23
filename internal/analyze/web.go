@@ -390,6 +390,11 @@ const webPage = `<!doctype html>
       color: var(--muted);
       font-size: 13px;
     }
+    .session-identity {
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
     .controls {
       display: grid;
       gap: 12px;
@@ -553,6 +558,10 @@ const webPage = `<!doctype html>
         <h2 class="panel-title">Session</h2>
         <div class="status-bar" id="statusBar"></div>
       </div>
+      <div class="panel-body session-identity">
+        <div>Session ID: <span class="mono" id="sessionIDValue">loading</span></div>
+        <div>Chat fingerprint: <span class="mono" id="sessionFingerprintValue">loading</span></div>
+      </div>
       <div class="panel-body stats">
         <div class="stat">
           <div class="stat-label">Packets</div>
@@ -649,6 +658,8 @@ const webPage = `<!doctype html>
     const modelPill = document.getElementById('modelPill');
     const statusPill = document.getElementById('statusPill');
     const statusBar = document.getElementById('statusBar');
+    const sessionIDValue = document.getElementById('sessionIDValue');
+    const sessionFingerprintValue = document.getElementById('sessionFingerprintValue');
     const packetsValue = document.getElementById('packetsValue');
     const packetsMeta = document.getElementById('packetsMeta');
     const uploadValue = document.getElementById('uploadValue');
@@ -769,6 +780,8 @@ const webPage = `<!doctype html>
       endpointPill.textContent = 'endpoint ' + (snapshot.endpoint || 'http://ai');
       modelPill.textContent = 'model ' + (snapshot.model || 'unknown');
       statusPill.textContent = 'status ' + (snapshot.status || 'waiting');
+      sessionIDValue.textContent = snapshot.session_id || 'unavailable';
+      sessionFingerprintValue.textContent = snapshot.session_fingerprint || 'unavailable';
       analysisState.textContent = snapshot.error ? 'error' : (snapshot.phase || 'idle');
 
       statusBar.innerHTML = '';

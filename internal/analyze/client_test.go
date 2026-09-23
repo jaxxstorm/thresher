@@ -7,13 +7,135 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/google/uuid"
 	"github.com/jaxxstorm/thresher/internal/capture"
 )
+
+func TestSessionFingerprint(t *testing.T) {
+	// SHA-256("abc") starts with these eight bytes.
+	if got := sessionFingerprint("abc"); got != "ba7816bf8f01cfea" {
+		t.Fatalf("unexpected fingerprint %q", got)
+	}
+	if sessionFingerprint("abc") == sessionFingerprint("def") {
+		t.Fatal("different identities should have different fingerprints")
+	}
+}
+
+func TestClientAnalyzeRequiresSessionID(t *testing.T) {
+	_, err := NewClient("http://unused", EndpointAuto, "").Analyze(context.Background(), AnalyzeRequest{})
+	if err == nil || !strings.Contains(err.Error(), "session ID") {
+		t.Fatalf("expected missing session ID error, got %v", err)
+	}
+}
+
+func TestSessionTrackingAcrossEndpointStyles(t *testing.T) {
+	for _, tc := range []struct {
+		style          EndpointStyle
+		path, response string
+	}{
+		{EndpointMessages, "/v1/messages", `{"content":[{"text":"analysis"}]}`},
+		{EndpointResponses, "/v1/responses", `{"output":[{"content":[{"text":"analysis"}]}]}`},
+		{EndpointChatCompletions, "/v1/chat/completions", `{"choices":[{"message":{"content":"analysis"}}]}`},
+		{EndpointAuto, "/v1/chat/completions", `{"choices":[{"message":{"content":"analysis"}}]}`},
+		{"", "/v1/chat/completions", `{"choices":[{"message":{"content":"analysis"}}]}`},
+	} {
+		t.Run(string(tc.style), func(t *testing.T) {
+			type upload struct {
+				header string
+				body   map[string]any
+			}
+			uploads := make(chan upload, 4)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/models" {
+					if r.Header.Get("Session_id") != "" {
+						t.Error("model discovery must remain untracked")
+					}
+					_, _ = io.WriteString(w, `{"data":[]}`)
+					return
+				}
+				if r.URL.Path != tc.path {
+					t.Errorf("path = %q, want %q", r.URL.Path, tc.path)
+				}
+				if r.Header.Get("User-Agent") != "thresher/test" || r.Header.Get("Content-Type") != "application/json" {
+					t.Error("existing request headers changed")
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				uploads <- upload{r.Header.Get("Session_id"), body}
+				_, _ = io.WriteString(w, tc.response)
+			}))
+			defer server.Close()
+			config := Config{Endpoint: server.URL, EndpointStyle: tc.style, Model: "first-model", UserAgent: "thresher/test", BatchPackets: 1}
+			record := capture.Record{Number: 1, Protocol: "DISCO", Info: "disco ping", PathID: 7, SNAT: "100.64.0.10", DNAT: "100.64.0.20", PayloadPreview: "DISCO ping", Analysis: &capture.Analysis{Annotations: []string{"disco-observed"}}}
+			const packetPrompt = "Analyze this packet capture window and explain what is happening:\n1   ->  DISCO disco ping path_id=7 snat=100.64.0.10 dnat=100.64.0.20 payload=\"DISCO ping\" annotations=disco-observed"
+			const systemPrompt = "You are analyzing decoded Tailscale packet capture output. Explain what is happening, identify notable flows, failures, or unusual behavior, and be concise but informative."
+			var previousID string
+			for run := 0; run < 2; run++ {
+				session := NewSession(config)
+				id := session.id
+				parsed, err := uuid.Parse(strings.TrimPrefix(id, "session_"))
+				if err != nil || !strings.HasPrefix(id, "session_") || parsed.Version() != 4 || parsed.Variant() != uuid.RFC4122 {
+					t.Fatalf("invalid canonical identity %q", id)
+				}
+				if id == previousID {
+					t.Fatal("new session reused the previous identity")
+				}
+				previousID = id
+				session.loadModels(context.Background())
+				for batch := 0; batch < 2; batch++ {
+					model := "first-model"
+					if batch == 1 {
+						session.State().SetPaused(true)
+						if err := session.consumeRecord(context.Background(), record); err != nil {
+							t.Fatal(err)
+						}
+						if len(uploads) != 0 {
+							t.Fatal("uploaded while paused")
+						}
+						model = "second-model"
+						session.State().SetActiveModel(model)
+						session.State().SetPaused(false)
+						if err := session.flush(context.Background()); err != nil {
+							t.Fatal(err)
+						}
+					} else if err := session.consumeRecord(context.Background(), record); err != nil {
+						t.Fatal(err)
+					}
+					got := <-uploads
+					key := "messages"
+					if tc.style == EndpointResponses {
+						key = "input"
+					}
+					wantBody := map[string]any{"model": model, key: []any{map[string]any{"role": "user", "content": systemPrompt + "\n\n" + packetPrompt}}}
+					wantHeader := sessionFingerprint(id)
+					switch tc.style {
+					case EndpointMessages:
+						wantBody["metadata"] = map[string]any{"user_id": id}
+						wantBody["max_tokens"] = float64(300)
+						wantHeader = ""
+					case EndpointResponses:
+						wantHeader = id
+					}
+					if got.header != wantHeader || !reflect.DeepEqual(got.body, wantBody) {
+						t.Fatalf("request = %#v, want header %q body %#v", got, wantHeader, wantBody)
+					}
+					snapshot := session.State().Snapshot()
+					if snapshot.SessionID != id || snapshot.SessionFingerprint != sessionFingerprint(id) || snapshot.UploadedBatches != batch+1 {
+						t.Fatalf("unexpected session snapshot: %#v", snapshot)
+					}
+				}
+			}
+		})
+	}
+}
 
 func TestClientAnalyzeChatCompletions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +150,7 @@ func TestClientAnalyzeChatCompletions(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, EndpointChatCompletions, "thresher/v1.2.3")
-	resp, err := client.Analyze(context.Background(), AnalyzeRequest{Model: "gpt-4o", Prompt: "analyze"})
+	resp, err := client.Analyze(context.Background(), AnalyzeRequest{SessionID: "session_00000000-0000-4000-8000-000000000001", Model: "gpt-4o", Prompt: "analyze"})
 	if err != nil {
 		t.Fatalf("Analyze() error = %v", err)
 	}

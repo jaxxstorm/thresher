@@ -7,28 +7,30 @@ import (
 )
 
 type SessionSnapshot struct {
-	Endpoint        string   `json:"endpoint"`
-	Status          string   `json:"status"`
-	LastEvent       string   `json:"last_event"`
-	Phase           string   `json:"phase"`
-	Model           string   `json:"model"`
-	Records         int      `json:"records"`
-	TotalBytes      int      `json:"total_bytes"`
-	PendingPackets  int      `json:"pending_packets"`
-	PendingBytes    int      `json:"pending_bytes"`
-	UploadedBatches int      `json:"uploaded_batches"`
-	InFlight        bool     `json:"in_flight"`
-	LimitReached    bool     `json:"limit_reached"`
-	Paused          bool     `json:"paused"`
-	Completed       bool     `json:"completed"`
-	Error           string   `json:"error,omitempty"`
-	BatchPackets    int      `json:"batch_packets"`
-	BatchBytes      int      `json:"batch_bytes"`
-	SessionPackets  int      `json:"session_packets"`
-	SessionBytes    int      `json:"session_bytes"`
-	Models          []string `json:"models,omitempty"`
-	Analysis        []string `json:"analysis,omitempty"`
-	Events          []string `json:"events,omitempty"`
+	SessionID          string   `json:"session_id"`
+	SessionFingerprint string   `json:"session_fingerprint"`
+	Endpoint           string   `json:"endpoint"`
+	Status             string   `json:"status"`
+	LastEvent          string   `json:"last_event"`
+	Phase              string   `json:"phase"`
+	Model              string   `json:"model"`
+	Records            int      `json:"records"`
+	TotalBytes         int      `json:"total_bytes"`
+	PendingPackets     int      `json:"pending_packets"`
+	PendingBytes       int      `json:"pending_bytes"`
+	UploadedBatches    int      `json:"uploaded_batches"`
+	InFlight           bool     `json:"in_flight"`
+	LimitReached       bool     `json:"limit_reached"`
+	Paused             bool     `json:"paused"`
+	Completed          bool     `json:"completed"`
+	Error              string   `json:"error,omitempty"`
+	BatchPackets       int      `json:"batch_packets"`
+	BatchBytes         int      `json:"batch_bytes"`
+	SessionPackets     int      `json:"session_packets"`
+	SessionBytes       int      `json:"session_bytes"`
+	Models             []string `json:"models,omitempty"`
+	Analysis           []string `json:"analysis,omitempty"`
+	Events             []string `json:"events,omitempty"`
 }
 
 type StateStore struct {

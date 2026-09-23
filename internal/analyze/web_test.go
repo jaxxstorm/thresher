@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,66 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 )
+
+func TestWebPresenterSessionIdentity(t *testing.T) {
+	const sessionID = "session_12345678-1234-4234-8234-123456789abc"
+	const fingerprint = "0123456789abcdef"
+	state := NewStateStore(Config{Model: "gpt-4o"})
+	state.Update(func(snapshot *SessionSnapshot) {
+		snapshot.SessionID = sessionID
+		snapshot.SessionFingerprint = fingerprint
+		snapshot.Models = []string{"gpt-4o", "claude"}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	presenter := &WebPresenter{}
+	handler := presenter.routes(ctx, cancel, state, "/")
+	for _, request := range []struct {
+		path string
+		body string
+	}{
+		{path: "/snapshot"},
+		{path: "/control/pause", body: `{"paused":true}`},
+		{path: "/control/pause", body: `{"paused":false}`},
+		{path: "/control/model", body: `{"model":"claude"}`},
+		{path: "/events"},
+	} {
+		method := http.MethodGet
+		if request.body != "" {
+			method = http.MethodPost
+		}
+		if request.path == "/events" {
+			state.Update(func(snapshot *SessionSnapshot) { snapshot.Completed = true })
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, request.path, strings.NewReader(request.body)))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s returned %d: %s", request.path, response.Code, response.Body.String())
+		}
+		payload := response.Body.String()
+		if request.path == "/events" {
+			payload = strings.TrimSpace(strings.TrimPrefix(payload, "event: snapshot\ndata: "))
+		}
+		var snapshot map[string]any
+		if err := json.Unmarshal([]byte(payload), &snapshot); err != nil {
+			t.Fatalf("decode %s: %v", request.path, err)
+		}
+		if snapshot["session_id"] != sessionID || snapshot["session_fingerprint"] != fingerprint {
+			t.Fatalf("%s lost session identity: %#v", request.path, snapshot)
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	for _, text := range []string{
+		`id="sessionIDValue"`, `id="sessionFingerprintValue"`,
+		"sessionIDValue.textContent = snapshot.session_id",
+		"sessionFingerprintValue.textContent = snapshot.session_fingerprint",
+	} {
+		if !strings.Contains(response.Body.String(), text) {
+			t.Fatalf("page missing session metadata binding %q", text)
+		}
+	}
+}
 
 type fakeWebRuntime struct {
 	open func(context.Context) (*webEndpoint, error)
