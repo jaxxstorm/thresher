@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
 	"tailscale.com/client/local"
 )
@@ -46,7 +47,6 @@ func StreamRecords(ctx context.Context, open StreamOpener, handle RecordHandler)
 		}
 		return err
 	}
-	defer stream.Close()
 
 	var closeOnce sync.Once
 	closeStream := func() {
@@ -56,9 +56,14 @@ func StreamRecords(ctx context.Context, open StreamOpener, handle RecordHandler)
 	}
 	defer closeStream()
 
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-ctx.Done()
-		closeStream()
+		select {
+		case <-ctx.Done():
+			closeStream()
+		case <-done:
+		}
 	}()
 
 	reader, err := pcapgo.NewReader(stream)
@@ -67,6 +72,10 @@ func StreamRecords(ctx context.Context, open StreamOpener, handle RecordHandler)
 			return nil
 		}
 		return fmt.Errorf("reading capture stream header: %w", err)
+	}
+
+	if reader.LinkType() != layers.LinkType(147) {
+		return fmt.Errorf("unsupported PCAP link type %v: expected Tailscale debug capture (USER0/147)", reader.LinkType())
 	}
 
 	analyzer := NewAnalyzer()

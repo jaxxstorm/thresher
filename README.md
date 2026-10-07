@@ -6,6 +6,7 @@ It can:
 
 - stream and decode live packet capture from a local `tailscaled`
 - print packet output as JSONL, compact JSONL, summary rows, or packet-list rows
+- convert saved Tailscale debug PCAPs into JSON for manual LLM upload
 - analyze live or saved packet streams with an Aperture-served LLM
 
 ## Installation
@@ -55,6 +56,42 @@ thresher capture --format jsonl-compact
 thresher capture --format summary
 thresher capture --format packet-list
 ```
+
+Convert a saved Tailscale debug capture into a JSON file for uploading to an LLM:
+
+```bash
+thresher convert capture.pcap                  # writes capture.json
+thresher convert capture.pcap -o analysis.json
+thresher convert capture.pcap -o -             # writes JSON to stdout
+thresher convert capture.pcap --include-raw    # also includes raw hex and payload previews
+thresher convert capture.pcap --mode summary -o summary.json # smaller aggregate export
+```
+
+Conversion runs entirely offline and does not upload anything. It supports classic
+PCAP files from Tailscale debug capture (USER0 link type), not general Ethernet
+captures or PCAPNG. The output is one JSON document with `schema_version`, a
+`packets` array, and `packet_count`. It retains decoded protocol details, stream
+timing, analysis annotations, and packet decode errors, while omitting raw hex
+and payload previews by default to reduce size. Addresses, DNS names, and other
+sensitive metadata remain: review the file before sharing it with an LLM.
+
+File output is replaced only after successful conversion; stdout may contain
+partial JSON if conversion fails. This JSON document is for external use, not
+`analyze --input`, which expects JSONL. Large captures may exceed an LLM's upload
+or context limits.
+
+For cheaper LLM context, use `--mode summary`. It replaces per-packet records with
+capture-wide totals, directional conversation counts, DNS observations, and
+selected TCP findings or decode errors. It retains the first 100 conversations,
+3 examples per finding category, and 20 query and 20 response examples. Global
+counts still cover the entire capture; the output reports limits and omissions.
+This is lossy compression, not anonymization: IP addresses and DNS names remain.
+
+Detailed export remains the default (`--mode detailed`) and is the fallback for
+investigating specific frames in the original PCAP. Summary mode rejects
+`--include-raw=true`. Neither export is input for `analyze --input`.
+See the [capture output guide](docs/capture-output.md#aggregate-json-summary) for
+schema details, interpretation caveats, and a reproducible size comparison.
 
 Analyze live traffic with an Aperture endpoint:
 
