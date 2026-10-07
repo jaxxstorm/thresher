@@ -25,6 +25,7 @@ type Config struct {
 	SessionPackets int
 	SessionBytes   int
 	MaxTokens      int
+	Summary        bool
 }
 
 type Session struct {
@@ -233,6 +234,21 @@ func (s *Session) flush(ctx context.Context) error {
 		activeModel = s.config.Model
 	}
 
+	var prompt string
+	if s.config.Summary {
+		summary, err := capture.SummaryJSON(s.batch)
+		if err != nil {
+			err = fmt.Errorf("summarizing analysis batch: %w", err)
+			s.state.Update(func(snapshot *SessionSnapshot) {
+				markSessionError(snapshot, err.Error())
+			})
+			return err
+		}
+		prompt = "Analyze this lossy batch summary of decoded Tailscale packet capture records and explain what is happening. The aggregated JSON covers only this batch, not the entire session; omitted packet details cannot be inferred:\n" + string(summary)
+	} else {
+		prompt = buildBatchPrompt(s.batch)
+	}
+
 	s.state.Update(func(snapshot *SessionSnapshot) {
 		snapshot.PendingPackets = batchPackets
 		snapshot.PendingBytes = batchBytes
@@ -247,7 +263,7 @@ func (s *Session) flush(ctx context.Context) error {
 		SessionID: s.id,
 		Model:     activeModel,
 		System:    "You are analyzing decoded Tailscale packet capture output. Explain what is happening, identify notable flows, failures, or unusual behavior, and be concise but informative.",
-		Prompt:    buildBatchPrompt(s.batch),
+		Prompt:    prompt,
 		MaxTokens: s.config.MaxTokens,
 	})
 	if err != nil {

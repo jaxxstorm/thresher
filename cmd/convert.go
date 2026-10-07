@@ -28,15 +28,26 @@ func newConvertCommand() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			exportMode := mode
+			if summary {
+				if cmd.Flags().Changed("mode") && mode != "summary" {
+					return fmt.Errorf("--summary cannot be combined with --mode %s", mode)
+				}
+				if includeRaw {
+					return fmt.Errorf("--include-raw=true is not supported with --summary")
+				}
+				exportMode = "summary"
+			}
 			path := output
 			if path == "" {
 				path = strings.TrimSuffix(args[0], filepath.Ext(args[0])) + ".json"
 			}
-			return runConvert(cmd.Context(), args[0], path, cmd.OutOrStdout(), mode, includeRaw)
+			return runConvert(cmd.Context(), args[0], path, cmd.OutOrStdout(), exportMode, includeRaw)
 		},
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "output file (default input name with .json extension; - for stdout)")
 	cmd.Flags().StringVar(&mode, "mode", "detailed", "export mode: detailed or summary")
+	_ = cmd.Flags().MarkHidden("mode")
 	cmd.Flags().BoolVar(&includeRaw, "include-raw", false, "include raw packet hex and payload previews (larger and potentially sensitive)")
 	return cmd
 }

@@ -16,6 +16,7 @@ import (
 var (
 	logger   *log.Logger
 	logLevel string
+	summary  bool
 
 	rootCmd = &cobra.Command{
 		Use:           "thresher",
@@ -49,6 +50,7 @@ func init() {
 	cobra.OnInitialize(initConfig)
 
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level: debug, info, warn, error, fatal")
+	rootCmd.PersistentFlags().BoolVar(&summary, "summary", false, "use aggregated JSON instead of detailed packets for capture, convert, and analysis")
 	_ = viper.BindPFlag("log-level", rootCmd.PersistentFlags().Lookup("log-level"))
 }
 

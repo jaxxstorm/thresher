@@ -9,6 +9,34 @@ import (
 	"io"
 )
 
+// SummaryJSON aggregates decoded records using the same schema as PCAP exports.
+func SummaryJSON(records []Record) ([]byte, error) {
+	s := newSummaryAccumulator()
+	for _, record := range records {
+		s.add(record)
+	}
+	return json.Marshal(s.finalize())
+}
+
+// StreamSummaryJSON emits one aggregate when the live stream ends or is canceled.
+// Unlike offline export, cancellation intentionally publishes the observations so far.
+func StreamSummaryJSON(ctx context.Context, output io.Writer, open StreamOpener) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s := newSummaryAccumulator()
+	if err := StreamRecords(ctx, open, func(record Record) error {
+		s.add(record)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := json.NewEncoder(output).Encode(s.finalize()); err != nil {
+		return fmt.Errorf("writing summary: %w", err)
+	}
+	return nil
+}
+
 // ExportSummaryJSON scans a capture before writing a bounded, lossy summary.
 // A write failure may leave partial JSON; input failures produce no output.
 func ExportSummaryJSON(ctx context.Context, output io.Writer, open StreamOpener) error {

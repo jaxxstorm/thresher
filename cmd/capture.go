@@ -31,7 +31,7 @@ func newCaptureCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&captureArgs.output, "output", "o", "", "path to write JSONL output (default stdout)")
+	cmd.Flags().StringVarP(&captureArgs.output, "output", "o", "", "path to write capture output (default stdout)")
 	cmd.Flags().StringVar(&captureArgs.format, "format", string(capture.FormatJSONL), "output format: jsonl, jsonl-compact, summary, packet-list")
 	return cmd
 }
@@ -52,7 +52,12 @@ func runCapture(ctx context.Context, stdout, stderr io.Writer) error {
 		return fmt.Errorf("writing capture status: %w", err)
 	}
 
-	if err := capture.StreamJSONL(ctx, w, openCaptureStream, format); err != nil {
+	if summary {
+		err = capture.StreamSummaryJSON(ctx, w, openCaptureStream)
+	} else {
+		err = capture.StreamJSONL(ctx, w, openCaptureStream, format)
+	}
+	if err != nil {
 		return fmt.Errorf("running capture: %w", err)
 	}
 

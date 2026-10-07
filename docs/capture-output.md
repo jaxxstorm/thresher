@@ -94,17 +94,26 @@ Use this when you want a dedicated packet-list-style rendering with one tab-sepa
 ## Aggregate JSON Summary
 
 ```bash
-go run . convert capture.pcap --mode summary -o summary.json
-go run . convert capture.pcap --mode summary -o -
-go run . convert capture.pcap --mode detailed -o detailed.json
+go run . convert capture.pcap --summary -o summary.json
+go run . convert capture.pcap --summary -o -
+go run . convert capture.pcap -o detailed.json
+go run . capture --summary -o live-summary.json
+go run . analyze web --summary --model gpt-4o
 ```
 
 Unlike `capture --format summary`, which prints one human-readable row per
-packet, `convert --mode summary` writes one aggregate JSON document for manual
+packet, `convert --summary` writes one aggregate JSON document for manual
 LLM upload. It runs offline and uploads nothing. Detailed mode remains the
 default. Both modes support classic Tailscale USER0 PCAPs, including gzip input,
 not general Ethernet PCAPs or PCAPNG. These documents are not accepted by
 `analyze --input`, which expects JSONL. Summary mode rejects `--include-raw=true`.
+
+`--summary` is global and can appear before or after the command. Live capture
+aggregates until EOF or Ctrl-C, then writes one document, overriding `--format`.
+Analysis (default, console, and web) sends the same schema to the LLM for each
+batch instead of detailed packet text. Each summary covers only that batch;
+packet views and original-record packet/byte limits are unchanged. Saved analysis
+input remains packet JSONL. The legacy `convert --mode summary` remains supported.
 
 ### Document Fields
 
@@ -181,7 +190,7 @@ IP addresses, DNS names/answers, and other metadata remain sensitive. Review the
 file before sharing it; summary mode is lossy compression, not anonymization.
 Retain the original PCAP and use detailed export to investigate omitted frames.
 
-Summary output is encoded only after a successful scan. File publication remains
+Offline conversion output is encoded only after a successful scan. File publication remains
 atomic: read errors or cancellation preserve an existing destination and clean up
 temporary output. A stdout write failure can leave partial JSON. Input/output
 aliases are rejected to protect the original capture.

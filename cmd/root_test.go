@@ -17,6 +17,8 @@ func executeCommand(args ...string) (string, error) {
 
 func executeCommandContext(ctx context.Context, args ...string) (string, error) {
 	buf := &bytes.Buffer{}
+	summary = false
+	defer func() { summary = false }()
 	viper.Reset()
 	setAnalyzeDefaults()
 	captureArgs.output = ""

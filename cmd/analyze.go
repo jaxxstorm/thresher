@@ -123,6 +123,7 @@ func runAnalyze(ctx context.Context, stdout, stderr io.Writer) error {
 
 func runAnalyzeWithMode(ctx context.Context, stdout, stderr io.Writer, mode string) error {
 	config := analyze.Config{
+		Summary:        summary,
 		Endpoint:       firstNonEmpty(analyzeArgs.endpoint, viper.GetString("analyze.endpoint")),
 		Model:          firstNonEmpty(analyzeArgs.model, viper.GetString("analyze.model")),
 		UserAgent:      resolveAnalyzeUserAgent(),

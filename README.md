@@ -64,7 +64,7 @@ thresher convert capture.pcap                  # writes capture.json
 thresher convert capture.pcap -o analysis.json
 thresher convert capture.pcap -o -             # writes JSON to stdout
 thresher convert capture.pcap --include-raw    # also includes raw hex and payload previews
-thresher convert capture.pcap --mode summary -o summary.json # smaller aggregate export
+thresher convert capture.pcap --summary -o summary.json # smaller aggregate export
 ```
 
 Conversion runs entirely offline and does not upload anything. It supports classic
@@ -80,18 +80,34 @@ partial JSON if conversion fails. This JSON document is for external use, not
 `analyze --input`, which expects JSONL. Large captures may exceed an LLM's upload
 or context limits.
 
-For cheaper LLM context, use `--mode summary`. It replaces per-packet records with
+For cheaper LLM context, use the global `--summary` flag. It replaces per-packet records with
 capture-wide totals, directional conversation counts, DNS observations, and
 selected TCP findings or decode errors. It retains the first 100 conversations,
 3 examples per finding category, and 20 query and 20 response examples. Global
 counts still cover the entire capture; the output reports limits and omissions.
 This is lossy compression, not anonymization: IP addresses and DNS names remain.
 
-Detailed export remains the default (`--mode detailed`) and is the fallback for
+Detailed export remains the default and is the fallback for
 investigating specific frames in the original PCAP. Summary mode rejects
 `--include-raw=true`. Neither export is input for `analyze --input`.
 See the [capture output guide](docs/capture-output.md#aggregate-json-summary) for
 schema details, interpretation caveats, and a reproducible size comparison.
+
+The same flag works with live capture and all analysis workflows:
+
+```bash
+thresher capture --summary -o summary.json # writes one aggregate when stopped with Ctrl-C
+thresher analyze --summary --model gpt-4o
+thresher analyze console --summary --model gpt-4o
+thresher analyze web --summary --model gpt-4o
+```
+
+Analysis sends one aggregate JSON summary per batch to the LLM; the console and
+web views still show individual packets. Existing packet and byte limits remain
+based on the original records, not the summary size. `analyze --input` still takes
+packet JSONL, not an exported summary. `capture --summary` overrides the selected
+`--format`; `capture --format summary` without the global flag still prints
+per-packet text rows. The older `convert --mode summary` spelling remains supported.
 
 Analyze live traffic with an Aperture endpoint:
 

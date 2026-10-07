@@ -65,6 +65,59 @@ func TestExportSummaryEmpty(t *testing.T) {
 	}
 }
 
+type cancelAtEOFStream struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (s cancelAtEOFStream) Read(p []byte) (int, error) {
+	n, err := s.ReadCloser.Read(p)
+	if err == io.EOF {
+		s.cancel()
+		return n, context.Canceled
+	}
+	return n, err
+}
+
+func TestStreamSummaryJSON(t *testing.T) {
+	open := exportTestStream(t, wrapPacket(1, nil, nil, mustIPv4TCPPacket(t)), []byte{1})
+	var expected bytes.Buffer
+	if err := ExportSummaryJSON(context.Background(), &expected, open); err != nil {
+		t.Fatal(err)
+	}
+	for _, cancelLive := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel_%t", cancelLive), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			liveOpen := open
+			if cancelLive {
+				stream, err := open(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				liveOpen = func(context.Context) (io.ReadCloser, error) {
+					return cancelAtEOFStream{ReadCloser: stream, cancel: cancel}, nil
+				}
+			}
+			var output bytes.Buffer
+			if err := StreamSummaryJSON(ctx, &output, liveOpen); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(output.Bytes(), expected.Bytes()) {
+				t.Fatalf("live summary differs from offline summary: %s", output.String())
+			}
+		})
+	}
+	var output bytes.Buffer
+	want := errors.New("capture unavailable")
+	err := StreamSummaryJSON(context.Background(), &output, func(context.Context) (io.ReadCloser, error) {
+		return nil, want
+	})
+	if !errors.Is(err, want) || output.Len() != 0 {
+		t.Fatalf("startup failure: err=%v output=%s", err, output.String())
+	}
+}
+
 func TestExportSummaryGzip(t *testing.T) {
 	compress := func(data []byte) []byte {
 		t.Helper()
